@@ -19,3 +19,15 @@ venv/
 *.pyo
 Thumbs.db
 *.tgz
+
+# Analysis corpus — cloned target repos, not source
+.corpus/
+
+# Grounding run artifacts — large, regenerable only at high agent cost
+.grounding/
+
+# Generated knowledge-graph data dir for THIS repo, from running /understand
+# here (the legacy .understand-anything name is ignored above). Committing one
+# also breaks vite-staleness.test.ts, whose dev-server fallback search reaches
+# the repo root when the temp project has no graph.
+.ua/
