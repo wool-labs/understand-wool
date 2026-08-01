@@ -16,6 +16,10 @@ Incrementally update the knowledge graph using deterministic structural fingerpr
 3. Check that `$UA_DIR/meta.json` exists and read `gitCommitHash`.
    - If not: report "No analysis metadata found. Run `/understand` to create a baseline." and **STOP**.
 
+3.5. **Schema version gate.** Read `version` from `$UA_DIR/meta.json`.
+   - If it is missing or lower than `1.1.0`, **STOP** and report: "The knowledge graph predates the qualified node-ID convention (v1.1.0). Run `/understand --full` to rebuild — an incremental update across this boundary would silently drop edges."
+   - Rationale: in 1.1.0 function and class node IDs began carrying dotted qualnames (`Chain.mount` rather than `mount`), and methods/closures became nodes. Re-analyzing only the changed files produces new-convention IDs alongside surviving old-convention ones; every edge spanning the two is dropped as dangling by the merge script, in both directions, with no error. This must be a hard stop rather than a warning, because the hook runs unattended.
+
 4. Get current commit hash:
    ```bash
    git rev-parse HEAD
