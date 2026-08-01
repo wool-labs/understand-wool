@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { buildResult } from "../../skills/understand/extract-structure-result.mjs";
 
 const file = (overrides = {}) => ({
@@ -108,5 +109,141 @@ describe("extract-structure buildResult", () => {
       expect(totalLines).toBe(3);
     });
 
+  });
+
+  describe("nested symbol index", () => {
+    const sym = (overrides = {}) => ({
+      qualname: "Outer.method",
+      name: "method",
+      kind: "method",
+      lineRange: [5, 20],
+      params: [],
+      depth: 1,
+      ...overrides,
+    });
+
+    it("carries symbols through to the result", () => {
+      const result = buildResult(
+        file(),
+        40,
+        30,
+        analysis({ symbols: [sym({ qualname: "Outer", name: "Outer", kind: "class", depth: 0 }), sym()] }),
+        null,
+        {},
+      );
+      expect(result.symbols).toHaveLength(2);
+      expect(result.symbols[1]).toMatchObject({
+        qualname: "Outer.method",
+        kind: "method",
+        startLine: 5,
+        endLine: 20,
+        depth: 1,
+      });
+    });
+
+    it("omits symbols entirely when the extractor produced none", () => {
+      const result = buildResult(file(), 10, 8, analysis(), null, {});
+      expect(result.symbols).toBeUndefined();
+    });
+
+    it("preserves optional symbol fields", () => {
+      const result = buildResult(
+        file(),
+        40,
+        30,
+        analysis({
+          symbols: [
+            sym({ parentQualname: "Outer", params: ["a"], returnType: "int", isAsync: true, exported: true }),
+          ],
+        }),
+        null,
+        {},
+      );
+      expect(result.symbols[0]).toMatchObject({
+        parentQualname: "Outer",
+        params: ["a"],
+        returnType: "int",
+        isAsync: true,
+        exported: true,
+      });
+    });
+
+    // Three separate bugs during the call-graph work were the same defect:
+    // a field added to SymbolInfo but missed in one of the allowlist
+    // projections between the core type and the resolver (`symbols` in the
+    // validator, `calleeName`/`calleeReceiver` in mapCallGraph, `isStub` in
+    // three places). Every one failed *silently* — the resolver simply
+    // returned less, which is not an error anywhere.
+    //
+    // This reads the field list off the interface itself, so adding a fifth
+    // field fails here until the projection is updated, rather than months
+    // later as a quietly emptier graph.
+    it("projects every field declared on SymbolInfo", () => {
+      const typesSrc = readFileSync(
+        new URL("../../packages/core/src/types.ts", import.meta.url),
+        "utf8",
+      );
+      const body = typesSrc.split("export interface SymbolInfo {")[1].split("\n}")[0];
+      const declared = [...body.matchAll(/^\s{2}(\w+)\??:/gm)].map(m => m[1]);
+      expect(declared.length).toBeGreaterThan(5); // the parse itself must not silently fail
+
+      const populated = sym({
+        parentQualname: "Outer",
+        params: ["a"],
+        returnType: "int",
+        isAsync: true,
+        exported: true,
+        isStub: true,
+      });
+      // Every declared field must be exercised, or the test passes by omission.
+      const unpopulated = declared.filter(f => populated[f] === undefined);
+      expect(unpopulated).toEqual([]);
+
+      const [out] = buildResult(file(), 40, 30, analysis({ symbols: [populated] }), null, {}).symbols;
+      // `lineRange` is deliberately flattened into startLine/endLine on the way
+      // out; every other field keeps its name.
+      const missing = declared.filter(f =>
+        f === "lineRange"
+          ? out.startLine === undefined || out.endLine === undefined
+          : out[f] === undefined);
+      expect(missing).toEqual([]);
+    });
+  });
+
+  describe("callGraph field pass-through", () => {
+    // mapCallGraph is an allowlist projection: a field it does not name is
+    // dropped with no error anywhere. Losing calleeName/calleeReceiver silently
+    // DISABLES call resolution (a resolver cannot tell `foo()` from `x.foo()`),
+    // so this is a regression guard for a failure that is otherwise invisible.
+    const entry = {
+      caller: "Service.start",
+      callee: "self.setup",
+      lineNumber: 12,
+      callerName: "start",
+      callerKind: "method",
+      calleeName: "setup",
+      calleeReceiver: "self",
+    };
+
+    it("carries the decomposed caller and callee fields", () => {
+      const result = buildResult(file(), 30, 20, analysis(), [entry], {});
+      expect(result.callGraph).toHaveLength(1);
+      expect(result.callGraph[0]).toMatchObject({
+        caller: "Service.start",
+        callee: "self.setup",
+        lineNumber: 12,
+        callerName: "start",
+        callerKind: "method",
+        calleeName: "setup",
+        calleeReceiver: "self",
+      });
+    });
+
+    it("omits absent optional fields rather than emitting undefined", () => {
+      const bare = { caller: "main", callee: "helper", lineNumber: 3, calleeName: "helper" };
+      const result = buildResult(file(), 30, 20, analysis(), [bare], {});
+      expect(result.callGraph[0]).not.toHaveProperty("calleeReceiver");
+      expect(result.callGraph[0].calleeName).toBe("helper");
+    });
   });
 });

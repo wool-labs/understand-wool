@@ -13,7 +13,14 @@ const OPTIONAL_STRUCTURE_ARRAY_FIELDS = [
   'endpoints',
   'steps',
   'resources',
+  // Nested definition index (functions, methods, closures, classes) used to
+  // build graph node ids and resolve call targets. Omitting it here silently
+  // drops the field on the way out, which is not an error anywhere — the
+  // downstream resolver just returns nothing.
+  'symbols',
 ];
+
+const SYMBOL_KINDS = new Set(['function', 'method', 'closure', 'class']);
 
 function isPlainObject(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -94,6 +101,18 @@ const STRUCTURE_ENTRY_VALIDATORS = {
     typeof entry.name === 'string' &&
     typeof entry.kind === 'string' &&
     isLineRange(entry.lineRange),
+  symbols: entry =>
+    typeof entry.qualname === 'string' &&
+    typeof entry.name === 'string' &&
+    SYMBOL_KINDS.has(entry.kind) &&
+    isLineRange(entry.lineRange) &&
+    isStringArray(entry.params) &&
+    isFiniteInteger(entry.depth) &&
+    hasValidOptionalField(entry, 'parentQualname', value => typeof value === 'string') &&
+    hasValidOptionalField(entry, 'returnType', value => typeof value === 'string') &&
+    hasValidOptionalField(entry, 'isAsync', value => typeof value === 'boolean') &&
+    hasValidOptionalField(entry, 'exported', value => typeof value === 'boolean') &&
+    hasValidOptionalField(entry, 'isStub', value => typeof value === 'boolean'),
 };
 
 function isValidStructuralAnalysis(analysis) {
@@ -119,12 +138,21 @@ function isValidCallGraph(callGraph) {
     isFiniteInteger(entry.lineNumber));
 }
 
+// This projection is an allowlist: any field not named here is dropped, with no
+// error anywhere downstream. `calleeName`/`calleeReceiver` are what let a
+// resolver tell `foo()` from `x.foo()` — which resolve by entirely different
+// rules — so losing them silently disables call resolution rather than breaking
+// it visibly. Keep this in step with `CallGraphEntry` in packages/core/types.ts.
 function mapCallGraph(callGraph) {
   return callGraph && callGraph.length > 0
     ? callGraph.map(entry => ({
         caller: entry.caller,
         callee: entry.callee,
         lineNumber: entry.lineNumber,
+        ...(entry.callerName !== undefined && { callerName: entry.callerName }),
+        ...(entry.callerKind !== undefined && { callerKind: entry.callerKind }),
+        ...(entry.calleeName !== undefined && { calleeName: entry.calleeName }),
+        ...(entry.calleeReceiver !== undefined && { calleeReceiver: entry.calleeReceiver }),
       }))
     : null;
 }
@@ -251,6 +279,27 @@ export function buildResult(file, totalLines, nonEmptyLines, analysis, callGraph
       name: exp.name,
       line: exp.lineNumber,
       isDefault: exp.isDefault === true,
+    }));
+  }
+
+  // Carried through raw so a second pass can resolve call targets across the
+  // whole batch. `graphSymbols` (the filtered, node-worthy subset) is computed
+  // there, not here, because it depends on which symbols turn out to be call
+  // endpoints anywhere in the batch.
+  if (analysis.symbols && analysis.symbols.length > 0) {
+    base.symbols = analysis.symbols.map(s => ({
+      qualname: s.qualname,
+      name: s.name,
+      kind: s.kind,
+      startLine: s.lineRange[0],
+      endLine: s.lineRange[1],
+      depth: s.depth,
+      ...(s.parentQualname !== undefined && { parentQualname: s.parentQualname }),
+      ...(s.params && s.params.length > 0 && { params: s.params }),
+      ...(s.returnType !== undefined && { returnType: s.returnType }),
+      ...(s.isAsync !== undefined && { isAsync: s.isAsync }),
+      ...(s.exported !== undefined && { exported: s.exported }),
+      ...(s.isStub !== undefined && { isStub: s.isStub }),
     }));
   }
 
