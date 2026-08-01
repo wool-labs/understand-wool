@@ -1,6 +1,6 @@
-import type { StructuralAnalysis, CallGraphEntry } from "../../types.js";
+import type { StructuralAnalysis, CallGraphEntry, SymbolInfo } from "../../types.js";
 import type { LanguageExtractor, TreeSitterNode } from "./types.js";
-import { findChild, findChildren } from "./base-extractor.js";
+import { findChild, findChildren, hasChildOfType } from "./base-extractor.js";
 
 /**
  * Extract parameter names from a Python `parameters` node.
@@ -79,6 +79,44 @@ function extractReturnType(node: TreeSitterNode): string | undefined {
 }
 
 /**
+ * True when a function body has no executable statements.
+ *
+ * Recognises the three shapes Python uses to declare-without-implementing:
+ * `...` (Protocol members, `@overload` signatures), `pass`, and
+ * `raise NotImplementedError`. A leading docstring is ignored.
+ */
+function isStubBody(node: TreeSitterNode): boolean {
+  const body = node.childForFieldName("body");
+  if (!body) return false;
+
+  const statements: TreeSitterNode[] = [];
+  for (let i = 0; i < body.childCount; i++) {
+    const child = body.child(i);
+    if (!child || child.type === "comment") continue;
+    statements.push(child);
+  }
+  if (statements.length === 0) return true;
+
+  // Drop a leading docstring.
+  const meaningful = statements.filter((s, index) => {
+    if (index !== 0 || s.type !== "expression_statement") return true;
+    const inner = s.child(0);
+    return !(inner && inner.type === "string");
+  });
+  if (meaningful.length === 0) return true;
+
+  return meaningful.every((s) => {
+    if (s.type === "pass_statement") return true;
+    if (s.type === "expression_statement") {
+      const inner = s.child(0);
+      return Boolean(inner && inner.type === "ellipsis");
+    }
+    if (s.type === "raise_statement") return s.text.includes("NotImplementedError");
+    return false;
+  });
+}
+
+/**
  * Unwrap a `decorated_definition` to get the inner definition.
  * If the node is not a decorated_definition, returns the node itself.
  */
@@ -138,37 +176,83 @@ export class PythonExtractor implements LanguageExtractor {
       }
     }
 
-    return { functions, classes, imports, exports };
+    const walked: SymbolInfo[] = [];
+    this.walkSymbols(rootNode, walked, "", 0, false, undefined, false);
+
+    // Collapse repeated qualnames, keeping the last.
+    //
+    // `@overload` declares the same name several times — stub signatures first,
+    // the real implementation last — so a file can yield `do_dispatch` three
+    // times and `WorkerProxy.__init__` four. Each becomes the same node id, and
+    // a graph cannot hold duplicate ids. Last-wins is right for both shapes this
+    // takes in Python: the implementation follows its overloads, and a
+    // conditional redefinition supersedes the earlier binding.
+    const byQualname = new Map<string, SymbolInfo>();
+    for (const symbol of walked) byQualname.set(symbol.qualname, symbol);
+
+    const symbols = [...byQualname.values()].sort(
+      (a, b) => a.lineRange[0] - b.lineRange[0],
+    );
+
+    return { functions, classes, imports, exports, symbols };
   }
 
   extractCallGraph(rootNode: TreeSitterNode): CallGraphEntry[] {
     const entries: CallGraphEntry[] = [];
-    const functionStack: string[] = [];
+    // Parallel stacks: the qualname segments, and what each segment is. Classes
+    // are pushed too — without them a method reports as `mount` rather than
+    // `Chain.mount`, which matches no graph node id.
+    const scopeStack: string[] = [];
+    const kindStack: SymbolInfo["kind"][] = [];
 
     const walkForCalls = (node: TreeSitterNode) => {
-      let pushedName = false;
+      let pushed = false;
 
-      // Track entering function/method definitions
-      if (node.type === "function_definition") {
+      if (node.type === "function_definition" || node.type === "class_definition") {
         const nameNode = node.childForFieldName("name");
         if (nameNode) {
-          functionStack.push(nameNode.text);
-          pushedName = true;
+          const isClass = node.type === "class_definition";
+          const parentIsClass = kindStack[kindStack.length - 1] === "class";
+          scopeStack.push(nameNode.text);
+          kindStack.push(
+            isClass
+              ? "class"
+              : parentIsClass
+                ? "method"
+                : kindStack.length > 0
+                  ? "closure"
+                  : "function",
+          );
+          pushed = true;
         }
       }
 
-      // Extract call expressions
       if (node.type === "call") {
-        const calleeNode = node.children.find(
-          (c) =>
-            c.type === "identifier" ||
-            c.type === "attribute",
-        );
-        if (calleeNode && functionStack.length > 0) {
+        // `function` is a real field on the Python `call` node. The previous
+        // children-scan could pick the wrong node for a non-trivial callee.
+        const fnNode = node.childForFieldName("function");
+        if (fnNode && scopeStack.length > 0) {
+          let calleeName: string | undefined;
+          let calleeReceiver: string | undefined;
+
+          if (fnNode.type === "identifier") {
+            calleeName = fnNode.text;
+          } else if (fnNode.type === "attribute") {
+            calleeName = fnNode.childForFieldName("attribute")?.text;
+            calleeReceiver = fnNode.childForFieldName("object")?.text;
+          }
+          // Anything else (subscript, chained call, parenthesized expression) is
+          // emitted with calleeName undefined — inherently unresolvable, but it
+          // still belongs in the denominator when measuring coverage.
+
           entries.push({
-            caller: functionStack[functionStack.length - 1],
-            callee: calleeNode.text,
+            caller: scopeStack.join("."),
+            callee: fnNode.text,
             lineNumber: node.startPosition.row + 1,
+            callerName: scopeStack[scopeStack.length - 1],
+            callerKind: kindStack[kindStack.length - 1],
+            calleeName,
+            calleeReceiver,
           });
         }
       }
@@ -178,14 +262,91 @@ export class PythonExtractor implements LanguageExtractor {
         if (child) walkForCalls(child);
       }
 
-      if (pushedName) {
-        functionStack.pop();
+      if (pushed) {
+        scopeStack.pop();
+        kindStack.pop();
       }
     };
 
     walkForCalls(rootNode);
 
     return entries;
+  }
+
+  /**
+   * Recursively index every definition in the file, nested ones included.
+   *
+   * Deliberately independent of `extractStructure`'s top-level loop, which stays
+   * byte-identical so `functions[]`/`classes[]` — and therefore every Python
+   * fingerprint — are unchanged.
+   *
+   * Two rules carry the weight:
+   *
+   *  - **Pass-through nodes do not advance the prefix.** `if True:` / `try:` /
+   *    `with:` blocks are not scopes in Python, so a `def` inside one is still
+   *    module-scope and must keep a bare qualname. The old top-level-only loop
+   *    missed such defs entirely.
+   *  - **`parentIsClass` is checked before `insideFunction`.** A class nested
+   *    inside a function still yields *methods*, not closures; testing
+   *    `insideFunction` first would mislabel every one of them.
+   */
+  private walkSymbols(
+    node: TreeSitterNode,
+    out: SymbolInfo[],
+    prefix: string,
+    depth: number,
+    insideFunction: boolean,
+    parentQualname: string | undefined,
+    parentIsClass: boolean,
+  ): void {
+    for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (!child) continue;
+
+      const inner = unwrapDecorated(child);
+
+      if (inner.type === "function_definition" || inner.type === "class_definition") {
+        const nameNode = inner.childForFieldName("name");
+        if (!nameNode) continue;
+
+        const isClass = inner.type === "class_definition";
+        const qualname = prefix + nameNode.text;
+        const kind: SymbolInfo["kind"] = isClass
+          ? "class"
+          : parentIsClass
+            ? "method"
+            : insideFunction
+              ? "closure"
+              : "function";
+
+        out.push({
+          qualname,
+          name: nameNode.text,
+          kind,
+          parentQualname,
+          lineRange: [inner.startPosition.row + 1, inner.endPosition.row + 1],
+          params: isClass ? [] : extractParams(inner.childForFieldName("parameters")),
+          returnType: isClass ? undefined : extractReturnType(inner),
+          depth,
+          isAsync: isClass ? undefined : hasChildOfType(inner, "async") || undefined,
+          exported: depth === 0 || undefined,
+          isStub: isClass ? undefined : isStubBody(inner) || undefined,
+        });
+
+        this.walkSymbols(
+          inner,
+          out,
+          qualname + ".",
+          depth + 1,
+          isClass ? insideFunction : true,
+          qualname,
+          isClass,
+        );
+      } else {
+        // Not a scope: keep prefix, depth, and parentage exactly as they are.
+        this.walkSymbols(child, out, prefix, depth, insideFunction, parentQualname, parentIsClass);
+      }
+    }
   }
 
   // ---- Private helpers ----

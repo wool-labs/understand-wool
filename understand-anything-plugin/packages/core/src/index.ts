@@ -12,6 +12,15 @@ export {
 } from "./schema.js";
 export { TreeSitterPlugin } from "./plugins/tree-sitter-plugin.js";
 export type { LanguageExtractor } from "./plugins/extractors/types.js";
+export {
+  resolveCalls,
+  selectGraphSymbols,
+  type FileSymbolTable,
+  type ResolvedCall,
+  type UnresolvedCall,
+  type ResolveOptions,
+  type SelectOptions,
+} from "./call-resolver.js";
 export { builtinExtractors } from "./plugins/extractors/index.js";
 export { GraphBuilder } from "./analyzer/graph-builder.js";
 export {
