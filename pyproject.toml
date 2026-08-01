@@ -1,0 +1,9 @@
+# Test tooling only — this repository is not a Python package. The Python
+# surface under test is the script pipeline in
+# understand-anything-plugin/skills/, exercised by the suites in tests/skill/.
+[tool.pytest.ini_options]
+testpaths = ["tests/skill"]
+# The repo root on sys.path so suites can import shared helpers from their
+# conftest as `tests.skill.docs.conftest` (there are no __init__.py files —
+# these are namespace packages).
+pythonpath = ["."]
