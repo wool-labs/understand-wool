@@ -66,6 +66,8 @@ node $PLUGIN_ROOT/skills/understand/scan-project.mjs \
   "$UA_DIR/tmp/ua-scan-files.json"
 ```
 
+If you write any throwaway Node script of your own into `$UA_DIR/tmp/`, **give it a `.cjs` extension, not `.js`.** A `"type": "module"` in a package.json anywhere above the analysed directory makes `.js` parse as ESM and `require` fail — which happens whenever the target sits inside a monorepo or is vendored under a JS project. `.cjs` is unambiguous regardless of what encloses it.
+
 With exclude patterns (add the `--exclude` flag after the output path):
 
 ```bash
