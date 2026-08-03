@@ -7,3 +7,6 @@ testpaths = ["tests/skill"]
 # conftest as `tests.skill.docs.conftest` (there are no __init__.py files —
 # these are namespace packages).
 pythonpath = ["."]
+markers = [
+    "pipeline: runs several pipeline stages in sequence to guard an inter-stage contract",
+]
