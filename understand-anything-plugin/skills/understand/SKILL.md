@@ -187,6 +187,7 @@ Determine whether to run a full analysis or incremental update.
    | No existing graph or meta | Full analysis (all phases) |
    | `--review` flag + existing graph + unchanged commit hash | Skip to Phase 6 (review-only — reuse existing assembled graph) |
    | Existing graph + unchanged commit hash | Ask the user: "The graph is up to date at this commit. Would you like to: **(a)** run a full rebuild (`--full`), **(b)** run the LLM graph reviewer (`--review`), or **(c)** do nothing?" Then follow their choice. If they pick (c), STOP. |
+   | Existing graph + `meta.json` `version` < `1.1.0` | **Full analysis.** The node ID convention changed in 1.1.0 (functions and classes now carry dotted qualnames like `DispatchSession._schedule_worker`, and methods/closures are nodes). An incremental update across that boundary silently drops every edge pointing at a renamed node, in both directions. Tell the user: "Rebuilding fully — the graph predates the qualified node-ID convention (v1.1.0)." |
    | Existing graph + changed files | Incremental update (re-analyze changed files only) |
 
    **Review-only path:** Copy the existing `knowledge-graph.json` to `$UA_DIR/intermediate/assembled-graph.json`, then jump directly to Phase 6 step 3.
@@ -577,7 +578,7 @@ Assemble the full KnowledgeGraph JSON object:
 
 ```json
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "project": {
     "name": "<projectName>",
     "languages": ["<languages>"],
@@ -769,7 +770,7 @@ Report to the user: `[Phase 7/7] Saving knowledge graph...`
    {
      "lastAnalyzedAt": "<ISO 8601 timestamp>",
      "gitCommitHash": "<commit hash>",
-     "version": "1.0.0",
+     "version": "1.1.0",
      "analyzedFiles": <number of files analyzed>
    }
    ```

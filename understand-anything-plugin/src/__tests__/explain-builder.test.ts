@@ -62,6 +62,51 @@ describe("explain-builder", () => {
       const ctx = buildExplainContext(sampleGraph, "src/auth.ts:login");
       expect(ctx.targetNode?.name).toBe("login");
     });
+
+    // Node names carry dotted qualnames since the symbol-index change
+    // (`Chain.mount`, not `mount`), so a bare-name request needs the
+    // last-segment fallback — without pre-empting exact matches.
+    describe("dotted-qualname fallback", () => {
+      const withDotted = (names: string[]): KnowledgeGraph => ({
+        ...sampleGraph,
+        nodes: [
+          sampleGraph.nodes[0],
+          ...names.map((name) => ({
+            id: `function:src/auth.ts:${name}`,
+            type: "function" as const,
+            name,
+            filePath: "src/auth.ts",
+            lineRange: [10, 30] as [number, number],
+            summary: `${name} handler`,
+            tags: [],
+            complexity: "moderate" as const,
+          })),
+        ],
+      });
+
+      it("prefers an exact name match over the fallback", () => {
+        const ctx = buildExplainContext(withDotted(["mount", "Chain.mount"]), "src/auth.ts:mount");
+        expect(ctx.targetNode?.name).toBe("mount");
+      });
+
+      it("resolves a bare name to its dotted qualname via the last segment", () => {
+        const ctx = buildExplainContext(withDotted(["Chain.mount"]), "src/auth.ts:mount");
+        expect(ctx.targetNode?.name).toBe("Chain.mount");
+      });
+
+      it("prefers the shallowest qualname when the last segment is ambiguous", () => {
+        const ctx = buildExplainContext(withDotted(["A.B.mount", "Chain.mount"]), "src/auth.ts:mount");
+        expect(ctx.targetNode?.name).toBe("Chain.mount");
+      });
+
+      it("still reports not-found when no last segment matches", () => {
+        // Pre-existing behaviour: an unresolvable path:function yields a null
+        // target (rendered as "not found"), and the fallback must not change
+        // that by grabbing an unrelated node.
+        const ctx = buildExplainContext(withDotted(["Chain.mount"]), "src/auth.ts:unmount");
+        expect(ctx.targetNode).toBeNull();
+      });
+    });
   });
 
   describe("formatExplainPrompt", () => {

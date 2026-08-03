@@ -105,13 +105,25 @@ Read `$UA_DIR/tmp/ua-file-extract-results-<batchIndex>.json`. The output format 
         {"name": "App", "line": 50, "isDefault": false}
       ],
       "callGraph": [
-        {"caller": "main", "callee": "initApp", "lineNumber": 15}
+        {"caller": "App.run", "callee": "self.init", "lineNumber": 15,
+         "callerKind": "method", "calleeName": "init", "calleeReceiver": "self"}
+      ],
+      "graphSymbols": [
+        {"qualname": "App", "kind": "class", "startLine": 50, "endLine": 140},
+        {"qualname": "App.run", "kind": "function", "startLine": 60, "endLine": 95}
+      ],
+      "callEdges": [
+        {"source": "function:src/app.ts:App.run",
+         "target": "function:src/app.ts:App.init",
+         "lineNumber": 15, "confidence": "exact"}
       ],
       "metrics": {
         "importCount": 5,
         "exportCount": 3,
         "functionCount": 4,
-        "classCount": 1
+        "classCount": 1,
+        "callEdgeCount": 1,
+        "symbolsTruncated": 0
       }
     }
   ]
@@ -239,7 +251,15 @@ If the structural data reveals notable language-specific patterns (e.g., many ge
 
 For significant functions and classes from the script output (code files only), create `function:` and `class:` nodes.
 
-**Significance filter** -- only create nodes for:
+**When `results[].graphSymbols` is present, the script has already applied the significance filter.** Create exactly one node for **every** entry, and none that are not listed:
+
+- `id` = `<kind>:<path>:<qualname>` — e.g. `class:src/session.py:DispatchSession`, `function:src/session.py:DispatchSession._schedule_worker._start._run`
+- `name` = the `qualname` (not the bare last segment)
+- `lineRange` = `[startLine, endLine]` from the entry
+
+Do not add symbols the script omitted, and do not omit symbols it listed. The script guarantees that every node referenced by `callEdges` appears in some file's `graphSymbols`, so departing from the list will dangle edges.
+
+**Fallback significance filter** — applies ONLY to files where `graphSymbols` is absent (languages whose extractor has not been upgraded, and non-code categories):
 - Functions/methods with 10+ lines (skip trivial one-liners)
 - Classes with 2+ methods or 20+ lines
 - Any function or class that is exported (visible to other modules)
@@ -256,9 +276,9 @@ Using the script's structural data and file categories, create edges:
 
 | Edge Type | When to Create | Weight | Direction |
 |---|---|---|---|
-| `contains` | File contains a function or class node you created (use for ALL function/class nodes) | `1.0` | `forward` |
+| `contains` | Nesting parent contains a function or class node you created (use for ALL function/class nodes) — see the nesting rule below | `1.0` | `forward` |
 | `imports` | File imports from another project file (use `batchImportData[filePath]` from input JSON — external imports already filtered out) | `0.7` | `forward` |
-| `calls` | A function in this file calls a function in another file (infer from imports + function names when confident) | `0.8` | `forward` |
+| `calls` | **Copy verbatim from `results[].callEdges`.** Each entry is `{source, target, lineNumber, confidence}` with node IDs already resolved by the script. Emit one edge per entry, `weight = confidence === "exact" ? 0.8 : 0.6`. Do NOT invent, infer, or omit any. Same-file edges are expected and are the majority. | see left | `forward` |
 | `inherits` | A class extends another class in the project | `0.9` | `forward` |
 | `implements` | A class implements an interface in the project | `0.9` | `forward` |
 | `exports` | File exports a function or class node you created (only for exported items — use IN ADDITION to `contains`, not instead of it) | `0.8` | `forward` |
@@ -266,6 +286,17 @@ Using the script's structural data and file categories, create edges:
 | `tested_by` | Production file is exercised by a test file. Emit when you see the test importing/using the production file. Use direction `production → test` if you can; the merge script will flip inverted edges and dedupe. | `0.5` | `forward` |
 
 **Note on `tested_by`:** It's fine to emit even if you're unsure of the direction (you typically see the relationship while analyzing the *test* file, where the import points back at production). The merge script (`merge-batch-graphs.py`) canonicalizes direction to `production → test` and drops semantically broken edges (test↔test, prod↔prod, orphan endpoint). Path-convention pairing supplements anything you miss.
+
+**Nesting rule for `contains`.** Node IDs carry dotted qualnames (`Class.method`, `outer.inner`, `Class.method.closure`), so `contains` forms a chain rather than a flat file→symbol fan-out. For each function/class node, emit exactly one `contains` edge from its **nearest ancestor that you actually emitted as a node**: strip trailing dotted segments from the qualname until you find one, and fall back to `file:<path>` if none matches.
+
+```
+file:src/session.py
+  └─ contains → class:src/session.py:DispatchSession
+       └─ contains → function:src/session.py:DispatchSession._schedule_worker
+            └─ contains → function:src/session.py:DispatchSession._schedule_worker._start._run
+```
+
+"Nearest **emitted** ancestor" is essential: the script's filter may omit an intermediate symbol (`_start` above), and an edge pointing at a node that does not exist is dropped by the merge script, orphaning the child. Every node still receives exactly one incoming `contains`.
 
 #### Edges for non-code files:
 
@@ -315,8 +346,8 @@ You MUST use these exact prefixes for node IDs:
 | Node Type | ID Format | Example |
 |---|---|---|
 | File | `file:<relative-path>` | `file:src/index.ts` |
-| Function | `function:<relative-path>:<function-name>` | `function:src/utils.ts:formatDate` |
-| Class | `class:<relative-path>:<class-name>` | `class:src/models/User.ts:User` |
+| Function | `function:<relative-path>:<qualname>` | `function:src/utils.ts:formatDate`, `function:src/session.py:DispatchSession._schedule_worker._start._run` |
+| Class | `class:<relative-path>:<qualname>` | `class:src/models/User.ts:User`, `class:src/api.py:Client.Config` |
 | Config | `config:<relative-path>` | `config:tsconfig.json` |
 | Document | `document:<relative-path>` | `document:README.md` |
 | Service | `service:<relative-path>` | `service:Dockerfile` |
@@ -476,6 +507,9 @@ Use these hints for common edge patterns:
 - NEVER produce duplicate node IDs within your batch.
 - NEVER create self-referencing edges (where source equals target).
 - Trust the script's structural extraction. Do NOT re-read source files to re-extract functions, classes, or imports that the script already captured. Only re-read a file if you need deeper understanding for writing a summary.
+- `calls` edges come **only** from `results[].callEdges`. Never infer one from an import list or a name that looks familiar. If a file has no `callEdges`, emit no `calls` edges for it — a missing edge is recoverable, a wrong one is not.
+- Your `calls` edge count MUST equal the sum of `callEdges.length` across your batch's results. State that number in your summary.
+- Every node ID appearing in a `callEdges` entry whose path is one of **your batch's** files must exist as a node in your output. The script guarantees it appears in some file's `graphSymbols`; if you find one that does not, report it as an error rather than dropping the edge.
 
 ## Writing Results — single or multi-part
 
@@ -514,7 +548,8 @@ Write part `k` (1-indexed) to `$UA_DIR/intermediate/batch-<batchIndex>-part-<k>.
 For each file written, verify:
 - Valid JSON.
 - `nodes` array exists and is well-formed.
-- For every edge: `source` and `target` both appear as either (a) a node `id` in this part's nodes, OR (b) a `file:<path>` reference where `<path>` is in `neighborMap` or `batchImportData`, OR (c) a `function:<path>:<symbol>` / `class:<path>:<symbol>` reference where `<symbol>` is in some `neighbor.symbols`.
+- For every edge: `source` and `target` both appear as either (a) a node `id` in this part's nodes, OR (b) a `file:<path>` reference where `<path>` is in `neighborMap` or `batchImportData`, OR (c) a `function:<path>:<symbol>` / `class:<path>:<symbol>` reference where `<symbol>` is in some `neighbor.symbols`, OR (d) the `source`/`target` of any `callEdges` entry in your input — these are script-resolved and may name a dotted qualname (`Class.method.closure`) that no `neighbor.symbols` list contains.
+- Your `calls` edge count equals the sum of `callEdges.length` across your batch's results.
 
 If validation fails on a part, do NOT silently rebuild. Respond with an explicit error stating which part failed, which edge(s) failed validation, and why. The dispatching session can then retry.
 

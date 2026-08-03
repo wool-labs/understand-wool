@@ -50,11 +50,168 @@ try {
   core = await import(pathToFileURL(resolve(pluginRoot, 'packages/core/dist/index.js')).href);
 }
 
-const { TreeSitterPlugin, PluginRegistry, builtinLanguageConfigs, registerAllParsers } = core;
+const {
+  TreeSitterPlugin,
+  PluginRegistry,
+  builtinLanguageConfigs,
+  registerAllParsers,
+  resolveCalls,
+  selectGraphSymbols,
+} = core;
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
+/** Result-shape symbols (startLine/endLine) back to core's SymbolInfo shape. */
+function toSymbolInfo(entry) {
+  return {
+    qualname: entry.qualname,
+    name: entry.name,
+    kind: entry.kind,
+    parentQualname: entry.parentQualname,
+    lineRange: [entry.startLine, entry.endLine],
+    params: entry.params ?? [],
+    returnType: entry.returnType,
+    depth: entry.depth,
+    isAsync: entry.isAsync,
+    exported: entry.exported,
+    isStub: entry.isStub,
+  };
+}
+
+/**
+ * Resolve every call site in the batch, then decide which symbols become nodes.
+ *
+ * Deliberately a second pass over all results rather than per-file work:
+ *
+ *  - a call from file A to file B in the *same batch* must resolve against B's
+ *    real symbol table, which does not exist yet while A is being analyzed; and
+ *  - `selectGraphSymbols` needs to know whether a symbol is a call endpoint
+ *    *anywhere in the batch*, otherwise a target node can be filtered away and
+ *    the edge pointing at it silently dropped by the merge script.
+ *
+ * Neighbour files named in `batchImportData` but outside the batch are parsed
+ * once each and memoized; a hub module imported by eight batch files costs one
+ * parse, and the total is bounded by import fan-out rather than repo size.
+ */
+function resolveBatchCalls(registry, projectRoot, results, batchImportData, priorEndpoints) {
+  const tables = new Map();
+  for (const result of results) {
+    if (!result.symbols) continue;
+    tables.set(result.path, {
+      filePath: result.path,
+      symbols: result.symbols.map(toSymbolInfo),
+      imports: [],
+    });
+  }
+
+  const neighborTable = (relPath) => {
+    if (tables.has(relPath)) return tables.get(relPath);
+    let table = null;
+    try {
+      const content = readFileSync(join(projectRoot, relPath), 'utf-8');
+      const { analysis } = analyzeFileWithOutcomes(
+        registry,
+        { path: relPath, fileCategory: 'code' },
+        content,
+      );
+      if (analysis?.symbols?.length) {
+        table = { filePath: relPath, symbols: analysis.symbols, imports: [] };
+      }
+    } catch (err) {
+      process.stderr.write(`Warning: extract-structure: neighbor parse failed for ${relPath}: ${err.message}\n`);
+    }
+    tables.set(relPath, table);
+    return table;
+  };
+
+  // Pass 1 — resolve, collecting every endpoint qualname across the batch.
+  const perFile = new Map();
+  const endpointsByFile = new Map();
+  let resolvedTotal = 0;
+  let unresolvedTotal = 0;
+
+  for (const result of results) {
+    const own = tables.get(result.path);
+    if (!own || !result.callGraph) continue;
+
+    const imported = (batchImportData?.[result.path] ?? [])
+      .map(neighborTable)
+      .filter(Boolean);
+
+    const { resolved, unresolved } = resolveCalls(result.path, result.callGraph, own, imported, {
+      uniqueNameTier: process.env.UA_CALLS_UNIQUE_NAME_TIER !== '0',
+    });
+    perFile.set(result.path, resolved);
+    resolvedTotal += resolved.length;
+    unresolvedTotal += unresolved.length;
+
+    for (const call of [...resolved]) {
+      for (const id of [call.source, call.target]) {
+        // id is "<kind>:<path>:<qualname>" — split off the leading kind, then
+        // the path, so a qualname containing ':' cannot corrupt the parse.
+        const firstColon = id.indexOf(':');
+        const lastColon = id.lastIndexOf(':');
+        const path = id.slice(firstColon + 1, lastColon);
+        const qualname = id.slice(lastColon + 1);
+        if (!endpointsByFile.has(path)) endpointsByFile.set(path, new Set());
+        endpointsByFile.get(path).add(qualname);
+      }
+    }
+  }
+
+  // Fold in endpoints discovered by *other batches* in an earlier pass.
+  //
+  // Endpoints collected above are batch-scoped, but call targets are run-scoped:
+  // a call in batch 1 to a symbol defined in batch 0 marks that symbol as an
+  // endpoint only in batch 1's bookkeeping, so batch 0 may filter it away and
+  // the merge script then drops the edge as dangling. Measured on wool: 5 of 386
+  // edges lost exactly this way, silently.
+  for (const [path, quals] of Object.entries(priorEndpoints ?? {})) {
+    if (!endpointsByFile.has(path)) endpointsByFile.set(path, new Set());
+    for (const q of quals) endpointsByFile.get(path).add(q);
+  }
+
+  // Pass 2 — select nodes now that run-global endpoints are known.
+  let truncatedTotal = 0;
+  for (const result of results) {
+    const own = tables.get(result.path);
+    if (!own) continue;
+    const { selected, truncated } = selectGraphSymbols(
+      own,
+      endpointsByFile.get(result.path) ?? new Set(),
+    );
+    truncatedTotal += truncated;
+    if (selected.length > 0) {
+      result.graphSymbols = selected.map(s => ({
+        qualname: s.qualname,
+        kind: s.kind === 'class' ? 'class' : 'function',
+        startLine: s.lineRange[0],
+        endLine: s.lineRange[1],
+      }));
+    }
+    const edges = perFile.get(result.path) ?? [];
+    if (edges.length > 0) result.callEdges = edges;
+    result.metrics = {
+      ...(result.metrics ?? {}),
+      callEdgeCount: edges.length,
+      symbolsTruncated: truncated,
+    };
+  }
+
+  return {
+    resolved: resolvedTotal,
+    unresolved: unresolvedTotal,
+    symbolsTruncated: truncatedTotal,
+    uniqueNameTier: process.env.UA_CALLS_UNIQUE_NAME_TIER !== '0',
+    // Every endpoint this batch saw, so a second pass can hand it to the other
+    // batches. Keyed by file, since that is how selection is scoped.
+    endpoints: Object.fromEntries(
+      [...endpointsByFile.entries()].map(([path, set]) => [path, [...set].sort()]),
+    ),
+  };
+}
+
 async function main() {
   const [,, inputPath, outputPath] = process.argv;
   if (!inputPath || !outputPath) {
@@ -123,12 +280,28 @@ async function main() {
     results.push(result);
   }
 
+  // Optional third argument: a merged endpoint map from a prior pass over every
+  // batch. Without it, cross-batch call targets can be filtered out of the batch
+  // that owns them and their edges dropped at merge time.
+  const endpointsPath = process.argv[4];
+  let priorEndpoints = {};
+  if (endpointsPath && existsSync(endpointsPath)) {
+    try {
+      priorEndpoints = JSON.parse(readFileSync(endpointsPath, 'utf-8'));
+    } catch (err) {
+      process.stderr.write(`Warning: extract-structure: could not read endpoints ${endpointsPath}: ${err.message}\n`);
+    }
+  }
+
+  const callResolution = resolveBatchCalls(registry, projectRoot, results, batchImportData, priorEndpoints);
+
   // Write output
   const output = {
     scriptCompleted: true,
     filesAnalyzed: results.length,
     filesSkipped,
     analysisOutcomes,
+    callResolution,
     results,
   };
 

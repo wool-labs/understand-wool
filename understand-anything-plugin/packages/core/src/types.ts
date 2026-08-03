@@ -181,6 +181,46 @@ export interface ReferenceResolution {
   line?: number;
 }
 
+/**
+ * One definition — function, method, closure, or class — with its position in the
+ * file's lexical nesting.
+ *
+ * This exists because `functions[]` and `classes[]` cannot answer "who called
+ * this?". `functions[]` holds only module-level defs; a method reaches the graph
+ * as a bare name string inside `classes[].methods`, and a nested closure appears
+ * nowhere at all. Measured on the `wool` corpus, that blind spot cost 90% of the
+ * call graph: 73% of call sites sit inside methods and 9% inside closures, and
+ * neither could be named as an edge endpoint.
+ *
+ * `qualname` is the dotted path from file scope (`Class.method`,
+ * `outer.inner`, `Class.method.closure`) and is what a graph node id is built
+ * from, so it must be stable and unambiguous within a file.
+ */
+export interface SymbolInfo {
+  qualname: string;
+  name: string;
+  kind: "function" | "method" | "closure" | "class";
+  parentQualname?: string;
+  lineRange: [number, number];
+  params: string[];
+  returnType?: string;
+  /** Lexical nesting depth; 0 is module scope. */
+  depth: number;
+  isAsync?: boolean;
+  exported?: boolean;
+  /**
+   * The body contains no executable statements — `...`, `pass`, or
+   * `raise NotImplementedError`, docstring aside.
+   *
+   * Load-bearing for call resolution: a stub cannot be a call target at
+   * runtime. When several candidates share a name and exactly one has a real
+   * body, binding to it is deterministic rather than a guess — which is the
+   * common Protocol-declaration / single-implementation shape, and also covers
+   * abstract bases and leftover `@overload` signatures.
+   */
+  isStub?: boolean;
+}
+
 // Plugin interfaces
 export interface StructuralAnalysis {
   functions: Array<{ name: string; lineRange: [number, number]; params: string[]; returnType?: string }>;
@@ -194,6 +234,15 @@ export interface StructuralAnalysis {
   endpoints?: EndpointInfo[];
   steps?: StepInfo[];
   resources?: ResourceInfo[];
+  /**
+   * Flat, source-ordered index of every definition in the file, nested ones
+   * included. A superset of `functions[]` + `classes[]`, added rather than
+   * folded into them: `fingerprint.ts` maps `functions[]` straight into
+   * `FunctionFingerprint[]`, so growing that array would churn every Python
+   * fingerprint and can escalate a run to FULL_UPDATE via `change-classifier`.
+   * Optional so extractors that have not been upgraded keep working unchanged.
+   */
+  symbols?: SymbolInfo[];
 }
 
 export interface ImportResolution {
@@ -202,10 +251,30 @@ export interface ImportResolution {
   specifiers: string[];
 }
 
+/**
+ * One call site.
+ *
+ * `caller` is the **dotted qualified name of the innermost enclosing named
+ * scope, rooted at file scope** — `DispatchSession._schedule_worker._start._run`,
+ * not `_run`. Extractors that have not been upgraded still emit the simple name;
+ * consumers must degrade gracefully rather than assume qualification.
+ *
+ * `callee` stays the raw source text of the callee expression. The decomposed
+ * `calleeName`/`calleeReceiver` pair is what a resolver should use — `callee`
+ * alone cannot distinguish `foo()` from `x.foo()`, and those resolve by
+ * completely different rules.
+ */
 export interface CallGraphEntry {
   caller: string;
   callee: string;
   lineNumber: number;
+  /** Innermost simple name of the caller, e.g. "_run". */
+  callerName?: string;
+  callerKind?: SymbolInfo["kind"];
+  /** Last dotted segment of the callee, e.g. "routine_scope". */
+  calleeName?: string;
+  /** Receiver expression for an attribute call: "self", "cls", "os.path". */
+  calleeReceiver?: string;
 }
 
 export interface AnalyzerPlugin {

@@ -36,6 +36,18 @@ export function buildExplainContext(
       nodes.find(
         (n) => n.filePath === filePath && n.name === funcName,
       ) ?? null;
+
+    // Node names carry dotted qualnames (`Chain.mount`), so a user asking for
+    // `src/chain.py:mount` finds nothing on an exact match. Fall back to the
+    // last segment. Ambiguity is possible — two classes may both define
+    // `mount` — so prefer the shallowest qualname, which is the one a bare
+    // name most likely meant.
+    if (!targetNode) {
+      const candidates = nodes
+        .filter((n) => n.filePath === filePath && n.name.split(".").pop() === funcName)
+        .sort((a, b) => a.name.split(".").length - b.name.split(".").length);
+      targetNode = candidates[0] ?? null;
+    }
   }
 
   // Fall back to file path match

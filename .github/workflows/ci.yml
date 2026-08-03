@@ -62,4 +62,9 @@ jobs:
         run: pnpm test
 
       - name: Test Python skill helpers
-        run: python -m unittest tests.skill.understand.test_merge_batch_graphs tests.skill.understand.test_merge_subdomain_graphs tests.skill.knowledge.test_parse_knowledge_base -v
+        # pytest collects the pre-existing unittest.TestCase suites natively,
+        # so this one invocation covers both styles. testpaths lives in
+        # pyproject.toml.
+        run: |
+          pip install pytest pytest-mock hypothesis
+          pytest tests/skill -v

@@ -529,8 +529,12 @@ def outer():
       expect(outerCalls.some((e) => e.callee === "helper")).toBe(true);
       expect(outerCalls.some((e) => e.callee === "another")).toBe(true);
 
-      const innerCalls = result.filter((e) => e.caller === "inner");
+      // `caller` is the dotted qualname rooted at file scope, not the bare
+      // innermost name — a bare name matches no graph node id.
+      const innerCalls = result.filter((e) => e.caller === "outer.inner");
       expect(innerCalls.some((e) => e.callee === "deep_call")).toBe(true);
+      expect(innerCalls[0]?.callerName).toBe("inner");
+      expect(innerCalls[0]?.callerKind).toBe("closure");
 
       tree.delete();
       parser.delete();
@@ -575,9 +579,20 @@ class Service:
 `);
       const result = extractor.extractCallGraph(root);
 
-      const startCalls = result.filter((e) => e.caller === "start");
+      // Class names are part of the caller qualname: `Service.start`, not `start`.
+      const startCalls = result.filter((e) => e.caller === "Service.start");
       expect(startCalls.some((e) => e.callee === "self.setup")).toBe(true);
       expect(startCalls.some((e) => e.callee === "run_server")).toBe(true);
+      expect(startCalls[0]?.callerKind).toBe("method");
+
+      // The callee is decomposed so a resolver can tell `foo()` from `x.foo()`,
+      // which resolve by completely different rules.
+      const setup = startCalls.find((e) => e.callee === "self.setup");
+      expect(setup?.calleeName).toBe("setup");
+      expect(setup?.calleeReceiver).toBe("self");
+      const server = startCalls.find((e) => e.callee === "run_server");
+      expect(server?.calleeName).toBe("run_server");
+      expect(server?.calleeReceiver).toBeUndefined();
 
       tree.delete();
       parser.delete();
@@ -654,6 +669,161 @@ def utility_func(*args, **kwargs) -> None:
 
       tree.delete();
       parser.delete();
+    });
+  });
+
+  // ---- Nested definition index ----
+
+  describe("symbols", () => {
+    const symbolsOf = (src: string) => {
+      const { tree, parser, root } = parse(src);
+      const result = extractor.extractStructure(root);
+      tree.delete();
+      parser.delete();
+      return result.symbols ?? [];
+    };
+
+    it("qualifies methods, closures, and closures inside closures", () => {
+      const symbols = symbolsOf(`
+class DispatchSession:
+    def _schedule_worker(self):
+        def _start():
+            def _run():
+                routine_scope()
+            return _run
+        return _start
+`);
+      const byQual = Object.fromEntries(symbols.map((s) => [s.qualname, s]));
+
+      expect(byQual["DispatchSession"]?.kind).toBe("class");
+      expect(byQual["DispatchSession._schedule_worker"]?.kind).toBe("method");
+      expect(byQual["DispatchSession._schedule_worker._start"]?.kind).toBe("closure");
+
+      // The exact shape that broke the wool call graph.
+      const run = byQual["DispatchSession._schedule_worker._start._run"];
+      expect(run?.kind).toBe("closure");
+      expect(run?.name).toBe("_run");
+      expect(run?.depth).toBe(3);
+      expect(run?.parentQualname).toBe("DispatchSession._schedule_worker._start");
+    });
+
+    it("keeps a def inside `if:` at module scope with a bare qualname", () => {
+      // `module -> if_statement -> block -> function_definition`. An `if` is not
+      // a scope in Python, so the prefix must not advance — and the old
+      // top-level-only loop missed such defs entirely.
+      const symbols = symbolsOf(`
+if True:
+    def conditional():
+        pass
+`);
+      const cond = symbols.find((s) => s.name === "conditional");
+      expect(cond?.qualname).toBe("conditional");
+      expect(cond?.depth).toBe(0);
+      expect(cond?.kind).toBe("function");
+    });
+
+    it("treats methods of a class nested in a function as methods, not closures", () => {
+      const symbols = symbolsOf(`
+def factory():
+    class Inner:
+        def method(self):
+            pass
+    return Inner
+`);
+      const byQual = Object.fromEntries(symbols.map((s) => [s.qualname, s]));
+      expect(byQual["factory.Inner"]?.kind).toBe("class");
+      // parentIsClass must win over insideFunction, or every such method is
+      // mislabelled a closure.
+      expect(byQual["factory.Inner.method"]?.kind).toBe("method");
+    });
+
+    it("records async and params, and unwraps decorators without duplicating", () => {
+      const symbols = symbolsOf(`
+import functools
+
+@functools.cache
+async def fetch(url, timeout=5):
+    pass
+`);
+      const fetch = symbols.filter((s) => s.name === "fetch");
+      expect(fetch).toHaveLength(1);
+      expect(fetch[0].isAsync).toBe(true);
+      expect(fetch[0].params).toEqual(["url", "timeout"]);
+      expect(fetch[0].exported).toBe(true);
+    });
+
+    it("leaves functions[] and classes[] untouched", () => {
+      // The no-churn guarantee: fingerprint.ts maps functions[] directly, so
+      // growing it would churn every Python fingerprint.
+      const { tree, parser, root } = parse(`
+class Only:
+    def a(self):
+        pass
+    def b(self):
+        pass
+`);
+      const result = extractor.extractStructure(root);
+      expect(result.functions).toHaveLength(0);
+      expect(result.classes).toHaveLength(1);
+      expect((result.symbols ?? []).length).toBe(3);
+      tree.delete();
+      parser.delete();
+    });
+
+    it("collapses @overload stubs to the implementation", () => {
+      // Each occurrence would otherwise become the same node id, and a graph
+      // cannot hold duplicate ids. Found by a file-analyzer agent that had to
+      // work around `do_dispatch` x3 and `WorkerProxy.__init__` x4 in wool.
+      const symbols = symbolsOf(`
+from typing import overload
+
+@overload
+def do_dispatch() -> bool: ...
+@overload
+def do_dispatch(value: bool) -> object: ...
+def do_dispatch(value=None):
+    if value is None:
+        return _flag.get()
+    return _scope(value)
+`);
+      const hits = symbols.filter((s) => s.name === "do_dispatch");
+      expect(hits).toHaveLength(1);
+      // The implementation, not a stub — it is the one with a real body.
+      expect(hits[0].lineRange[1] - hits[0].lineRange[0]).toBeGreaterThan(1);
+    });
+
+    it("collapses overloaded methods inside a class", () => {
+      const symbols = symbolsOf(`
+from typing import overload
+
+class WorkerProxy:
+    @overload
+    def __init__(self, *, discovery) -> None: ...
+    @overload
+    def __init__(self, *, workers) -> None: ...
+    def __init__(self, **kwargs):
+        self._kwargs = kwargs
+        self._started = False
+`);
+      const inits = symbols.filter((s) => s.qualname === "WorkerProxy.__init__");
+      expect(inits).toHaveLength(1);
+      expect(inits[0].kind).toBe("method");
+    });
+
+    it("emits symbols in source order", () => {
+      const symbols = symbolsOf(`
+def first():
+    pass
+
+class Second:
+    def third(self):
+        pass
+
+def fourth():
+    pass
+`);
+      const lines = symbols.map((s) => s.lineRange[0]);
+      expect([...lines].sort((a, b) => a - b)).toEqual(lines);
     });
   });
 });
