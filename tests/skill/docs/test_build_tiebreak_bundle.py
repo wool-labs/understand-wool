@@ -64,7 +64,7 @@ def test_main_should_package_only_disputed_claims(
     """
     # Arrange
     dirs = corpus(tmp_path, {
-        "c1": ["supported", "overstated"],
+        "c1": ["supported", "contradicted"],
         "c2": ["supported", "supported"],
     })
 
@@ -74,8 +74,8 @@ def test_main_should_package_only_disputed_claims(
     # Assert
     (claim,) = bundle["claims"]
     assert claim["claimId"] == "claim:c1"
-    assert claim["shape"] == "overstated vs supported"
-    assert claim["priorVerdicts"][0]["verdict"] in ("supported", "overstated")
+    assert claim["shape"] == "contradicted vs supported"
+    assert claim["priorVerdicts"][0]["verdict"] in ("supported", "contradicted")
 
 
 def test_main_should_write_disagreement_shapes_into_bundle(
@@ -92,8 +92,8 @@ def test_main_should_write_disagreement_shapes_into_bundle(
     """
     # Arrange
     dirs = corpus(tmp_path, {
-        "c1": ["supported", "overstated"],
-        "c2": ["contradicted", "supported"],
+        "c1": ["supported", "contradicted"],
+        "c2": ["unverifiable", "supported"],
     })
 
     # Act
@@ -101,8 +101,8 @@ def test_main_should_write_disagreement_shapes_into_bundle(
 
     # Assert
     assert bundle["disagreementShapes"] == {
-        "overstated vs supported": 1,
         "contradicted vs supported": 1,
+        "supported vs unverifiable": 1,
     }
     assert bundle["claimCount"] == 2
 
@@ -110,18 +110,19 @@ def test_main_should_write_disagreement_shapes_into_bundle(
 def test_main_should_force_unanimous_claim_when_listed_in_also_claims(
     build_tiebreak_bundle, monkeypatch, tmp_path
 ):
-    """Test impactMissing routing through --also-claims.
+    """Test the escape hatch for a claim the passes agreed on.
 
     Given:
-        A claim both passes unanimously call overstated, whose ID is passed via
-        --also-claims as a bare list.
+        A claim both passes unanimously call supported, whose ID is passed via
+        --also-claims.
     When:
         main() builds the tie-break bundle.
     Then:
-        It should include the claim with the unanswered-harm-test shape.
+        It should include the claim, marked as forced rather than disputed, so
+        the adjudicator knows what it is being asked.
     """
     # Arrange
-    dirs = corpus(tmp_path, {"c1": ["overstated", "overstated"]})
+    dirs = corpus(tmp_path, {"c1": ["supported", "supported"]})
     sel = write_json(tmp_path / "also.json", ["claim:c1"])
 
     # Act
@@ -132,34 +133,33 @@ def test_main_should_force_unanimous_claim_when_listed_in_also_claims(
 
     # Assert
     (claim,) = bundle["claims"]
-    assert claim["shape"] == "overstated (unanswered harm test)"
+    assert claim["shape"] == "supported (forced for review)"
 
 
-def test_main_should_accept_grounded_artifact_as_also_claims(
+def test_main_should_ignore_a_non_list_also_claims_payload(
     build_tiebreak_bundle, monkeypatch, tmp_path
 ):
-    """Test the second --also-claims input schema.
+    """Test that an unexpected --also-claims shape forces nothing.
 
     Given:
-        --also-claims pointing at a grounded-*.json object carrying an
-        impactMissing list rather than a bare list.
+        --also-claims pointing at a JSON object rather than a list of IDs.
     When:
-        main() builds the tie-break bundle.
+        main() builds the tie-break bundle over claims the passes agreed on.
     Then:
-        It should consume the impactMissing key and force those claims in.
+        It should force nothing in, rather than guessing at a key.
     """
     # Arrange
-    dirs = corpus(tmp_path, {"c1": ["overstated", "overstated"]})
-    sel = write_json(tmp_path / "grounded.json", {"impactMissing": ["claim:c1"]})
+    dirs = corpus(tmp_path, {"c1": ["supported", "supported"]})
+    sel = write_json(tmp_path / "grounded.json", {"claims": ["claim:c1"]})
 
     # Act
-    (bundle,) = run_main(
+    bundles = run_main(
         build_tiebreak_bundle, monkeypatch, tmp_path, dirs,
         extra=("--also-claims", str(sel)),
     )
 
     # Assert
-    assert [c["claimId"] for c in bundle["claims"]] == ["claim:c1"]
+    assert bundles == []
 
 
 def test_main_should_exclude_claim_when_it_has_a_single_vote(

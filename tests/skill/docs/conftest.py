@@ -68,6 +68,21 @@ def strip_docstrings() -> Any:
     return load_script("strip_docstrings")
 
 
+@pytest.fixture(scope="session")
+def design_lens() -> Any:
+    return load_script("design_lens")
+
+
+@pytest.fixture(scope="session")
+def emit_claim_graph() -> Any:
+    return load_script("emit_claim_graph")
+
+
+@pytest.fixture(scope="session")
+def prompt_invariants() -> Any:
+    return load_script("test_prompts")
+
+
 # ── Corpus builders ───────────────────────────────────────────────────────
 
 MIRROR_SOURCE = """\
@@ -164,7 +179,8 @@ def make_pass(out_dir: Path, name: str, verdicts: list[dict]) -> Path:
 
 
 def verdict_entry(cid: str, verdict: str, ev: list[dict] | None = None,
-                  overstatement: dict | None = None) -> dict:
+                  overstatement: dict | None = None,
+                  scope_note: dict | None = None) -> dict:
     entry: dict = {
         "claimId": f"claim:{cid}",
         "verdict": verdict,
@@ -176,4 +192,86 @@ def verdict_entry(cid: str, verdict: str, ev: list[dict] | None = None,
     }
     if overstatement is not None:
         entry["overstatement"] = overstatement
+    if scope_note is not None:
+        entry["scopeNote"] = scope_note
     return entry
+
+
+# ── design_lens / emit_claim_graph corpora ────────────────────────────────
+
+DOC_UNIT_ID = "docunit:u1"
+CLAIM_ID = "claim:c1"
+
+
+def make_claims_file(path: Path, claims: list[dict]) -> Path:
+    """A reconciled claims file, the positional input to design_lens."""
+    return write_json(path, {"schemaVersion": "0.1.0",
+                             "stats": {"subsystem": "layer:pool"},
+                             "claims": claims})
+
+
+def reconciled_claim(cid: str = CLAIM_ID, text: str = "Pool.spawn spawns workers.",
+                     unit: str = DOC_UNIT_ID) -> dict:
+    return {"id": cid, "docUnitId": unit, "claimText": text,
+            "claimType": "factual", "quantifier": "particular",
+            "passCount": 5, "sourceQuote": text, "fieldIndex": None,
+            "variants": [text]}
+
+
+def make_grounded_file(path: Path, claims: list[dict]) -> Path:
+    """A grounded-*.json, the --grounded input to design_lens."""
+    return write_json(path, {"schemaVersion": "0.1.0", "stats": {},
+                             "claims": claims})
+
+
+def grounded_claim(cid: str = CLAIM_ID, verdict: str = "supported",
+                   ev: list[dict] | None = None,
+                   scope_note: dict | None = None) -> dict:
+    entry = {"claimId": cid, "verdict": verdict, "agreement": "unanimous",
+             "evidence": ev if ev is not None else [
+                 {"file": "pkg/pool.py", "lines": [6, 7], "role": "supports"}],
+             "claimText": "Pool.spawn spawns workers."}
+    if scope_note is not None:
+        entry["scopeNote"] = scope_note
+    return entry
+
+
+def make_doc_units(path: Path, units: list[dict] | None = None) -> Path:
+    return write_json(path, {"docUnits": units or [{
+        "id": DOC_UNIT_ID,
+        "sourceFile": "pkg/pool.py",
+        "sourceLine": 5,
+        "docLineRange": [6, 7],
+        "attachedKind": "function",
+        "attachedTo": "function:pkg/pool.py:Pool.spawn",
+        "text": "Spawns workers.",
+    }]})
+
+
+def make_graph(path: Path) -> Path:
+    """A knowledge graph with one file node, enough for claim linkage."""
+    return write_json(path, {
+        "version": "1.1.0",
+        "project": {"name": "t", "languages": ["python"], "frameworks": [],
+                    "description": "t", "analyzedAt": "2026-01-01T00:00:00Z",
+                    "gitCommitHash": "abc"},
+        "nodes": [{"id": "file:pkg/pool.py", "type": "file", "name": "pool.py",
+                   "filePath": "pkg/pool.py", "summary": "Pool", "tags": [],
+                   "complexity": "simple"}],
+        "edges": [], "layers": [], "tour": [],
+    })
+
+
+def make_design_claims(path: Path, claims: list[dict]) -> Path:
+    """A design-claims.json, the --design-claims input to emit_claim_graph."""
+    return write_json(path, {"schemaVersion": "0.1.0", "stats": {},
+                             "claims": claims})
+
+
+def design_claim(cid: str = CLAIM_ID, grounding: dict | None = None,
+                 text: str = "Pool.spawn spawns workers.",
+                 unit: str = DOC_UNIT_ID, passes: int = 5) -> dict:
+    return {"claimId": cid, "claimText": text, "claimType": "factual",
+            "quantifier": "particular", "passCount": passes, "docUnitId": unit,
+            "subsystem": "pool", "roles": ["mechanism"], "symbols": ["Pool"],
+            "grounding": grounding}
