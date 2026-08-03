@@ -80,44 +80,39 @@ def main() -> int:
     # agents emit a verdict the reconciler silently rewrites.
     verdicts = re.search(r"^VERDICTS = \((.*?)\)", reconcile, re.M | re.S)
     declared = set(re.findall(r'"(\w+)"', verdicts.group(1))) if verdicts else set()
-    check("reconcile_verdicts.VERDICTS == 4 known values",
-          declared == {"supported", "overstated", "contradicted", "unverifiable"},
+    check("reconcile_verdicts.VERDICTS == 3 known values",
+          declared == {"supported", "contradicted", "unverifiable"},
           str(sorted(declared)))
     for v in sorted(declared):
         check(f"  prompt documents verdict `{v}`", f"`{v}`" in taxonomy)
 
-    # `overstated` without a limiting citation is downgraded by the reconciler.
+    # A scope note without a limiting citation is dropped by the reconciler.
     # If the prompt does not say so, agents lose findings without knowing why.
     check("prompt names the `limits` role", '"limits"' in taxonomy or "`limits`" in taxonomy)
-    check("prompt warns that a bound-less overstated is downgraded",
-          "downgraded to `supported`" in taxonomy)
+    check("prompt warns that a bound-less scope note is dropped",
+          "a scope note without a verified limiting citation is dropped" in taxonomy)
     check("BOUND_ROLES in the script matches the prompt",
           'BOUND_ROLES = ("limits", "contradicts")' in reconcile)
 
-    # The harm test. Question 1 alone ("does anything survive the weakening?") is
-    # satisfiable for almost any false sentence; on the 813-claim run it let 7
-    # claims out of `contradicted` that a reader would have acted wrongly on,
-    # with both passes agreeing — a rule failure, not agent variance.
-    check("taxonomy states both discriminator questions",
-          "survive the weakening" in taxonomy and "safe to walk into" in taxonomy)
-    check("taxonomy asks whether the reader is inconvenienced or wrong",
-          "inconvenienced, or are they wrong" in taxonomy)
-
-    # `readerImpact` is to question 2 what the bound is to question 1: the only
-    # trace that it was asked at all.
-    check("taxonomy requires `readerImpact`", "readerImpact" in taxonomy)
-    check("taxonomy says a missing readerImpact does not move the verdict",
-          "does not change your verdict automatically" in taxonomy)
+    # The fourth verdict was withdrawn after a control arm measured it
+    # reproducing at 17/31 against `contradicted`'s 14/14. Nothing should
+    # reintroduce it, and the taxonomy should say why so the next reader does
+    # not re-propose it from first principles.
+    check("no verdict named `overstated` survives in the taxonomy",
+          "| `overstated`" not in taxonomy)
+    check("taxonomy explains why the fourth verdict was withdrawn",
+          "withdrawn" in taxonomy and "17 times in 31" in taxonomy)
+    check("taxonomy documents scope notes", "scopeNote" in taxonomy)
     for name, text in (("ground", ground), ("tiebreak", tiebreak)):
-        check(f"{name} output schema carries readerImpact",
-              '"readerImpact"' in text.split("## Output", 1)[-1])
-    check("reconcile_verdicts enforces readerImpact presence",
-          "def has_impact(" in reconcile and "impactMissing" in reconcile)
+        check(f"{name} output schema carries scopeNote",
+              '"scopeNote"' in text.split("## Output", 1)[-1])
+    check("reconcile_verdicts builds scope notes and folds legacy verdicts",
+          "def scope_note(" in reconcile and "LEGACY_VERDICTS" in reconcile)
 
     # Calibration examples move inter-rater agreement more than definitions do.
-    # F and G are the harm-test pair: they narrow by the same amount and differ
-    # only in what a reader does with the sentence.
-    for label in ("A —", "B —", "C —", "D —", "E —", "F —", "G —"):
+    # A and E are the pair that matters: same shape, opposite verdict, and the
+    # difference is only what a reader does with the sentence.
+    for label in ("A —", "B —", "C —", "D —", "E —"):
         check(f"calibration example {label.strip(' —')} present", label in taxonomy)
 
     # Run-specific counts made the old tie-break prompt single-use.

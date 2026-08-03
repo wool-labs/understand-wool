@@ -16,7 +16,7 @@ the difference is intentional. Extraction wants independent samples of the same
 distribution. A tie-break wants the *best* answer, and the disagreement itself is
 evidence: the observed splits are rarely about what the code does (both passes
 usually find the same defect) but about how to label it — most often whether a
-demonstrated shortfall makes a claim `supported` or `overstated`.
+located boundary makes the claim `supported` with a scope note or `contradicted`.
 
 Usage:
     python3 build_tiebreak_bundle.py --verdicts DIR --bundles DIR [--out DIR]
@@ -42,18 +42,15 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=Path("."))
     ap.add_argument("--also-claims", type=Path, default=None,
                     help="JSON list of claim IDs to adjudicate even where the "
-                         "passes agreed — e.g. the `impactMissing` list from "
-                         "reconcile_verdicts.py, where both passes said "
-                         "`overstated` but neither answered the harm test")
+                         "passes agreed — an escape hatch for claims a human "
+                         "wants a third opinion on regardless of consensus")
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
     forced: set[str] = set()
     if args.also_claims:
         payload = json.loads(args.also_claims.read_text())
-        # Accept either a bare list or a grounded-*.json carrying `impactMissing`.
-        forced = set(payload if isinstance(payload, list)
-                     else payload.get("impactMissing") or [])
+        forced = set(payload if isinstance(payload, list) else [])
 
     # claim -> its source bundle and metadata
     claim_meta: dict[str, dict] = {}
@@ -98,8 +95,8 @@ def main() -> int:
                 agreed += 1
                 continue
             # Unanimous but structurally incomplete. The adjudicator sees two
-            # identical priors and a shape of `<verdict> (unanswered harm test)`,
-            # which is the question it is being asked to settle.
+            # identical priors and a shape marking it forced, which is the
+            # question it is being asked to settle.
             forced_in += 1
         disputed[claim_bundle[cid]].append({
             **{k: claim_meta[cid][k] for k in
@@ -107,7 +104,7 @@ def main() -> int:
                 "sourceFile", "qualname", "groundingTarget", "candidateSites")},
             "priorVerdicts": vs,
             "shape": (" vs ".join(sorted(distinct)) if len(distinct) > 1
-                      else f"{next(iter(distinct))} (unanswered harm test)"),
+                      else f"{next(iter(distinct))} (forced for review)"),
         })
 
     total_disputed = sum(len(v) for v in disputed.values())

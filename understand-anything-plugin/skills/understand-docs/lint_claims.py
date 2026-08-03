@@ -10,9 +10,10 @@ Grounding grades a claim against code. If extraction has already widened the
 claim past what the docstring said, grounding correctly finds a counterexample
 and reports a documentation defect that the documentation never committed — a
 bug we filed against someone else's repo, in our own wording. Measured on wool:
-3 of 63 `overstated` verdicts were manufactured this way (~5%), so this is a
-narrow leak rather than a systemic one, but it is invisible without a check like
-this and the only alternative is re-running a 5-pass extraction to find out.
+3 of the 63 claims that carried a located boundary were manufactured this way
+(~5%), so this is a narrow leak rather than a systemic one — but it is invisible
+without a check like this, and the only alternative is re-running a 5-pass
+extraction to find out.
 
 The two checks correspond to the two amended canonical-form rules in
 `prompts/extract-claims.md`:
@@ -36,8 +37,8 @@ needs a reader, and this file does not pretend otherwise.
 
 MEASURED BASELINE (wool, 813 claims, the corpus these rules were derived from):
 3 dropped qualifiers, 7 one-sided splits — 1.2%, and every one a real loss on
-inspection. Restricted to the 53 `overstated` verdicts: 1 flag. Treat a jump
-above that as a prompt regression, not as a corpus that suddenly got worse.
+inspection. Restricted to the 53 claims that carried a boundary: 1 flag. Treat a
+jump above that as a prompt regression, not a corpus that suddenly got worse.
 
 Usage:
     python3 lint_claims.py CLAIMS.json [CLAIMS.json ...]   reconciled claim sets
@@ -181,7 +182,7 @@ def main() -> int:
                     help="directory of ground-*.json bundles")
     ap.add_argument("--verdicts", type=Path, default=None,
                     help="grounded-*.json; restrict to claims with --verdict")
-    ap.add_argument("--verdict", default="overstated")
+    ap.add_argument("--verdict", default="contradicted")
     ap.add_argument("--max-flags", type=int, default=None,
                     help="exit 1 when total flags exceed this")
     ap.add_argument("--quiet", action="store_true")

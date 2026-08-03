@@ -134,11 +134,11 @@ def main() -> int:
 
     # Grounding, where it exists. Absence is normal: only one subsystem is ground-
     # ed so far, and a design graph should not wait on full-corpus verification.
-    # `role` must survive. An `overstated` verdict is defined by its *limiting*
-    # citation — the one showing where the documented behaviour stops — and
-    # dropping the role leaves a graph node tagged OVERSTATED with no visible
-    # reason. Bound-role items are also sorted first, so the truncation below
-    # cannot discard the citation that carries the finding.
+    # `role` must survive. A scope note is defined by its *limiting* citation —
+    # the one showing where the documented behaviour stops — and dropping the
+    # role leaves a claim asserting a boundary with no visible reason. Bound-role
+    # items are also sorted first, so the truncation below cannot discard the
+    # citation that carries the finding.
     BOUND_ROLES = {"limits", "contradicts"}
 
     def project(evidence: list[dict]) -> list[dict]:
@@ -160,8 +160,8 @@ def main() -> int:
                 "verdict": claim["verdict"],
                 "agreement": claim["agreement"],
                 "evidence": project(claim.get("evidence")),
-                **({"overstatement": claim["overstatement"]}
-                   if claim.get("overstatement") else {}),
+                **({"scopeNote": claim["scopeNote"]}
+                   if claim.get("scopeNote") else {}),
             }
 
     records: list[dict[str, Any]] = []

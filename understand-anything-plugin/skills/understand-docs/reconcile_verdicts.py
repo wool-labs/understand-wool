@@ -55,34 +55,62 @@ SCHEMA_VERSION = "0.1.0"
 
 # Ordered as a severity ladder; this drives the report table and the stdout line,
 # so the order is load-bearing rather than cosmetic.
-VERDICTS = ("supported", "overstated", "contradicted", "unverifiable")
+#
+# There were briefly four. `overstated` — the claim is true but promises more
+# than the code delivers — was built, shipped, and then measured against a
+# control arm: re-grounding the same 71 claims with fresh agents reproduced
+# `contradicted` 14/14 and `overstated` only 17/31. Rewording the prompt did not
+# help (52% on the same set), because the instability is the category: a verdict
+# whose whole content is "there exists an excluded case, and here it is" depends
+# on a second grader *finding* that case, and eleven of the fourteen misses were
+# graders who simply did not. The bound it cited is a different matter — those
+# citations verify at 100% — so the pointer is kept as a scope note and only the
+# label was withdrawn. Do not re-propose it without a reproduction measurement.
+VERDICTS = ("supported", "contradicted", "unverifiable")
 
 # Verdicts that assert something about the code and therefore must cite it.
-EVIDENCE_REQUIRED = ("supported", "overstated", "contradicted")
+EVIDENCE_REQUIRED = ("supported", "contradicted")
 
-# Evidence roles that establish where a documented behaviour *stops*. An
-# `overstated` verdict needs one: without a citable bound you have proved the
-# mechanism, not the shortfall.
+# Evidence roles that establish where a documented behaviour *stops*. These are
+# what a scope note is built from: the claim holds, and here is the line where
+# it stops holding.
 BOUND_ROLES = ("limits", "contradicts")
 
+# Verdicts accepted on input but resolved to something in VERDICTS. The frozen
+# grounding archive is full of `overstated` votes; folding rather than rejecting
+# them keeps it replayable, which is the only way to measure what the fold did.
+LEGACY_VERDICTS = ("overstated",)
 
-def has_impact(overstatement: Any) -> bool:
-    """True when the grader wrote out the harm test.
 
-    `overstated` turns on two questions: does anything survive the weakening,
-    and is the excluded case safe to walk into? The bound (`BOUND_ROLES`) is the
-    machine-checkable half of the first. `readerImpact` is the only trace the
-    second was asked at all — a grader who cannot finish that sentence has found
-    a `contradicted`, and the missing field is how that goes noticed.
+def scope_note(vote: dict, verified_bounds: list[dict],
+               verdict: str | None = None) -> dict | None:
+    """The finding an `overstated` vote carried, without the verdict.
 
-    Absence does **not** move the verdict. Losing the bound loses the
-    qualification, so downgrading to `supported` is principled; a missing impact
-    statement is evidence of nothing, and escalating on it would turn a
-    forgotten field into a false bug report against someone's codebase. These
-    rows are counted and routed to adjudication instead.
+    `asSupported` is the narrowed form the code actually supports; the bound is
+    the verified citation showing where the documented behaviour stops. Together
+    they answer "the docstring says X — where does that stop being true?", which
+    is the part a consumer can act on. `asWritten` is dropped because it merely
+    restates `claimText`, and `readerImpact` with the harm test that required it.
+
+    A note belongs only on a claim that HOLDS. `BOUND_ROLES` includes
+    `contradicts`, so without the verdict guard a `contradicted` vote carrying an
+    `asSupported` payload acquires a note, inflates `scopeNotes`, and renders
+    under a report heading that reads "claims that hold" — the opposite of what
+    it found. `unverifiable` is excluded for the same reason: nothing was
+    established, so nothing can be bounded.
     """
-    return bool(isinstance(overstatement, dict)
-                and (overstatement.get("readerImpact") or "").strip())
+    if verdict is not None and verdict != "supported":
+        return None
+    payload = vote.get("scopeNote") or vote.get("overstatement") or {}
+    if not isinstance(payload, dict) or not verified_bounds:
+        return None
+    narrowed = (payload.get("asSupported") or "").strip()
+    if not narrowed:
+        return None
+    return {"asSupported": narrowed,
+            "bound": [{"file": b.get("file"), "lines": b.get("lines"),
+                       "role": b.get("role")} for b in verified_bounds]}
+
 
 # Tie-break order for an unresolved split, most-surfaced first.
 #
@@ -91,7 +119,7 @@ def has_impact(overstatement: Any) -> bool:
 # `supported` for a claim one pass called `unverifiable` asserts a verification
 # that is actually disputed, which is the more damaging error — and the row is
 # headed for adjudication regardless, where the displayed value is replaced.
-TIE_PRIORITY = ("contradicted", "overstated", "unverifiable", "supported")
+TIE_PRIORITY = ("contradicted", "unverifiable", "supported")
 
 STUB_MARKERS = ("<docstring removed>",)
 
@@ -188,7 +216,7 @@ def main() -> int:
     ev_stats = collections.Counter()
     ev_failures: list[dict] = []
     downgrades: list[dict] = []
-    bound_downgrades: list[dict] = []
+    folded: list[dict] = []
     pass_ids: set[str] = set()
     coverage: dict[str, set[str]] = collections.defaultdict(set)
 
@@ -224,24 +252,40 @@ def main() -> int:
             verdict = v.get("verdict")
             original = verdict
 
-            # Two rungs, not one.
+            # A legacy `overstated` vote resolves to `supported` and keeps its
+            # bound as a scope note. The claim is true — that was never the
+            # dispute — so `supported` is the honest label, and the citation
+            # showing where it stops is the part worth keeping.
             #
-            # An `overstated` verdict that proved the mechanism but never cited
-            # the bound falls back to `supported` — not to `unverifiable`.
-            # Dumping a claim with proven supporting evidence into the least
-            # valuable bucket destroys the very finding the pass got right.
-            if verdict == "overstated" and verified and not verified_bounds:
-                verdict = "supported"
-                bound_downgrades.append({
-                    "pass": pid, "claimId": cid, "from": original,
-                    "reason": "no verified evidence with a limiting role",
-                })
+            # It resolves like any other evidence-bearing verdict when nothing
+            # verifies: `unverifiable`, recorded. Gating the whole branch on
+            # `verified` left that case matching neither arm, since `overstated`
+            # is no longer in EVIDENCE_REQUIRED — it fell through to the
+            # bare-coercion line below and was counted nowhere, which is exactly
+            # where `foldedOverstated` is meant to be loudest.
+            #
+            # `folded` counts every legacy verdict SEEN, whatever it became, so
+            # it stays a true stale-prompt detector. A vote can therefore appear
+            # in both ledgers: the label was legacy *and* its evidence failed.
+            if verdict in LEGACY_VERDICTS:
+                if verified:
+                    verdict = "supported"
+                else:
+                    verdict = "unverifiable"
+                    downgrades.append({"pass": pid, "claimId": cid, "from": original,
+                                       "reason": "no verifiable evidence"})
+                folded.append({"pass": pid, "claimId": cid,
+                               "from": original, "to": verdict})
             elif verdict in EVIDENCE_REQUIRED and not verified:
                 verdict = "unverifiable"
                 downgrades.append({"pass": pid, "claimId": cid, "from": original,
                                    "reason": "no verifiable evidence"})
             if verdict not in VERDICTS:
                 verdict = "unverifiable"
+
+            # Built after the verdict resolves, so the guard sees the final
+            # label rather than the one the agent wrote.
+            note = scope_note(v, verified_bounds, verdict)
 
             per_claim[cid].append({
                 "pass": pid,
@@ -254,11 +298,10 @@ def main() -> int:
                 "unverifiedEvidence": unverified,
                 "scopeChecked": v.get("scopeChecked"),
                 "searchedFor": v.get("searchedFor"),
-                # The suggested weakening. Requiring it forces the grader to
-                # actually perform the minimal-repair test rather than assert a
-                # conclusion, and it is the machine-collectable deliverable of
-                # an `overstated` verdict.
-                "overstatement": v.get("overstatement"),
+                # Where the claim stops holding, when the grader located it.
+                # Machine-collectable, and the deliverable a bare `supported`
+                # would otherwise discard.
+                "scopeNote": note,
             })
 
     # How many passes covered each bundle — the denominator for unanimity.
@@ -297,12 +340,16 @@ def main() -> int:
         if verdict:
             final[verdict] += 1
 
-        # Prefer the vote that cited a bound. Keying on evidence count alone
-        # lets a vote with five supporting citations outrank the single vote
-        # that actually located the shortfall — which is the whole finding.
+        # Prefer the vote that actually wrote the scope note, then bound count,
+        # then evidence count. Note-presence must outrank bound-count: a vote
+        # citing two bounds without a narrowing would otherwise beat the one
+        # vote that cited a single bound *and* said what the claim narrows to,
+        # discarding the only finding this taxonomy still records. Keying on
+        # evidence count alone is worse again — five supporting citations would
+        # outrank the vote that located where the claim stops.
         best = max((v for v in votes if v["verdict"] == verdict),
-                   key=lambda v: (len(v.get("verifiedBounds") or []),
-                                  has_impact(v.get("overstatement")),
+                   key=lambda v: (bool(v.get("scopeNote")),
+                                  len(v.get("verifiedBounds") or []),
                                   len(v["evidence"])),
                    default=None)
         results.append({
@@ -320,7 +367,7 @@ def main() -> int:
             "voteCounts": dict(tally),
             "evidence": best["evidence"] if best else [],
             "reasoning": best["reasoning"] if best else None,
-            "overstatement": best.get("overstatement") if best else None,
+            "scopeNote": best.get("scopeNote") if best else None,
             "votes": votes,
         })
 
@@ -349,34 +396,41 @@ def main() -> int:
                                         "file": item.get("file"), "lines": item.get("lines"),
                                         "failure": reason})
             verdict = v.get("verdict")
-            if verdict == "overstated" and verified and not bounds:
-                bound_downgrades.append({"pass": "tiebreak", "claimId": cid,
-                                         "from": verdict, "reason": "no verified bound"})
-                verdict = "supported"
+            original = verdict
+            # Same ladder as the pass path, deliberately. Gating the fold on
+            # `verified` here was worse than in the pass path: the row fell to
+            # `continue` and the entire adjudication was discarded — no verdict
+            # change, no `adjudicated` increment, nothing printed. An
+            # adjudicator's answer must never vanish silently, whatever it said.
+            if verdict in LEGACY_VERDICTS:
+                if verified:
+                    verdict = "supported"
+                else:
+                    verdict = "unverifiable"
+                    downgrades.append({"pass": "tiebreak", "claimId": cid,
+                                       "from": original,
+                                       "reason": "no verifiable evidence"})
+                folded.append({"pass": "tiebreak", "claimId": cid,
+                               "from": original, "to": verdict})
             elif verdict in EVIDENCE_REQUIRED and not verified:
                 downgrades.append({"pass": "tiebreak", "claimId": cid,
-                                   "from": verdict, "reason": "no verifiable evidence"})
+                                   "from": original, "reason": "no verifiable evidence"})
                 verdict = "unverifiable"
             if verdict not in VERDICTS:
                 continue
+            note = scope_note(v, bounds, verdict)
             if record["verdict"]:
                 final[record["verdict"]] -= 1
             agree[record["agreement"]] -= 1
             record["verdict"] = verdict
             record["agreement"] = "adjudicated"
             record["reasoning"] = v.get("reasoning") or record["reasoning"]
-            record["overstatement"] = v.get("overstatement") or record.get("overstatement")
+            record["scopeNote"] = note or record.get("scopeNote")
             if verified:
                 record["evidence"] = verified
             final[verdict] += 1
             agree["adjudicated"] += 1
             adjudicated += 1
-
-    # Computed after adjudication so an adjudicated `overstated` is held to the
-    # same requirement as a first-pass one. These claim IDs are what
-    # `build_tiebreak_bundle.py --also-claims` consumes.
-    impact_missing = [r["claimId"] for r in results
-                      if r["verdict"] == "overstated" and not has_impact(r.get("overstatement"))]
 
     total = len(expected)
     stats = {
@@ -391,18 +445,17 @@ def main() -> int:
         "evidenceFailureRate": round(
             ev_stats["evidence BAD"] / max(1, ev_stats["evidence ok"] + ev_stats["evidence BAD"]), 4),
         "downgraded": len(downgrades),
-        # Detector for `overstated` asserted without a citable bound. A high
-        # rate means agents are calling vagueness overstatement.
-        "boundDowngrades": len(bound_downgrades),
-        # `overstated` rows where the harm test was never written out. Unlike
-        # boundDowngrades these keep their verdict; they are routed to
-        # adjudication. A high rate means the second discriminator question is
-        # being skipped, which is exactly how the category over-absorbs
-        # `contradicted`.
-        "impactMissing": len(impact_missing),
+        # Legacy `overstated` votes resolved to `supported`. Non-zero only when
+        # replaying pass files written under the four-verdict taxonomy; on a
+        # current run it should be 0, and a rising number means an agent is
+        # working from a stale prompt.
+        "foldedOverstated": len(folded),
+        # How many claims carry a located bound. This is the retrievable output
+        # the fourth verdict used to represent, now measured directly.
+        "scopeNotes": sum(1 for r in results if r.get("scopeNote")),
         "adjudicated": adjudicated,
-        # `overstated` lives on universal claims; this is how you tell the
-        # category took hold from the category absorbing every hedged universal.
+        # Scope notes cluster on universal claims; this is how you tell a real
+        # boundary finding from a hedge applied to every quantified sentence.
         "verdictByQuantifier": {
             f"{q}/{v}": n for (q, v), n in sorted(collections.Counter(
                 (r["quantifier"], r["verdict"]) for r in results if r["verdict"]
@@ -413,8 +466,7 @@ def main() -> int:
     (args.out / f"grounded-{args.label}.json").write_text(json.dumps({
         "schemaVersion": SCHEMA_VERSION, "stats": stats,
         "evidenceFailures": ev_failures, "downgrades": downgrades,
-        "boundDowngrades": bound_downgrades,
-        "impactMissing": impact_missing,
+        "foldedOverstated": folded,
         "claims": results,
     }, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
 
@@ -430,15 +482,9 @@ def main() -> int:
                        f"({r['voteCounts']})  ")
             if r.get("reasoning"):
                 out.append(f"{r['reasoning']}  ")
-            if r.get("overstatement"):
-                o = r["overstatement"]
-                out.append(f"as written: _{o.get('asWritten', '?')}_  ")
-                out.append(f"**as supported: {o.get('asSupported', '?')}**  ")
-                # The harm test. Its absence is the finding, so say so in place
-                # rather than leaving a silently shorter entry.
-                out.append(f"reader impact: {o['readerImpact']}  " if has_impact(o)
-                           else "reader impact: **not stated — routed to adjudication**  ")
-            # Bound-role citations first: on an `overstated` row the limiting
+            if r.get("scopeNote"):
+                out.append(f"**holds as far as: {r['scopeNote']['asSupported']}**  ")
+            # Bound-role citations first: where a scope note exists the limiting
             # citation is the whole point and may otherwise fall outside [:2].
             ev = sorted(
                 r.get("evidence") or [],
@@ -455,7 +501,7 @@ def main() -> int:
         return "\n".join(out)
 
     contradicted = [r for r in results if r["verdict"] == "contradicted"]
-    overstated = [r for r in results if r["verdict"] == "overstated"]
+    scoped = [r for r in results if r.get("scopeNote")]
     split = [r for r in results if r["agreement"] == "split"]
     supported = [r for r in results if r["verdict"] == "supported"]
     unver = [r for r in results if r["verdict"] == "unverifiable"]
@@ -481,14 +527,12 @@ def main() -> int:
     report += ["",
                f"_{len(downgrades)} verdicts were downgraded to `unverifiable` "
                f"because no cited evidence survived verification._\n",
-               f"_{len(bound_downgrades)} `overstated` verdicts fell back to "
-               f"`supported` for lack of a verified limiting citation._\n",
-               f"_{len(impact_missing)} `overstated` verdicts kept their verdict but "
-               f"never answered the harm test; they are routed to adjudication._\n",
+               f"_{len(folded)} legacy `overstated` votes were folded into "
+               f"`supported`; the located bound survives as a scope note._\n",
                "## Contradicted — documentation that disagrees with the code\n",
                section("Contradicted", contradicted),
-               "## Overstated — documentation that promises more than the code delivers\n",
-               section("Overstated", overstated),
+               "## Scope notes — claims that hold, with a located boundary\n",
+               section("Scoped", scoped),
                "## Split — no majority verdict, needs a human\n",
                section("Split verdicts", split, limit=40),
                ]
@@ -498,9 +542,9 @@ def main() -> int:
     print(f"  evidence: {ev_stats['evidence ok']} verified, {ev_stats['evidence BAD']} rejected "
           f"({stats['evidenceFailureRate']:.1%} bad), {len(downgrades)} verdicts downgraded")
     print("  verdicts:  " + "  ".join(f"{k} {final.get(k, 0)}" for k in VERDICTS))
-    if bound_downgrades or impact_missing:
-        print(f"  overstated: {len(bound_downgrades)} bound-downgraded, "
-              f"{len(impact_missing)} missing readerImpact (→ adjudication)")
+    if folded:
+        print(f"  folded {len(folded)} legacy `overstated` votes into `supported`")
+    print(f"  scope notes: {stats['scopeNotes']} claims carry a located bound")
     print("  agreement: " + "  ".join(
         f"{k} {agree.get(k, 0)} ({agree.get(k, 0) / total:.0%})" for k in
         ("unanimous", "majority", "split", "missing") if agree.get(k)))
