@@ -19,11 +19,12 @@ concurrency:
 
 jobs:
   ci:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    # Linux only, deliberately. This project is developed and used on macOS,
+    # and the Windows leg of the old matrix cost more than it caught — the
+    # Python suites trip over CRLF translation in test fixtures, which would
+    # make every future path- or newline-touching test a cross-platform
+    # obligation for a platform with no users. (#3)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
