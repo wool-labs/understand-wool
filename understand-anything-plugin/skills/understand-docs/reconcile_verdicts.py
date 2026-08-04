@@ -416,8 +416,19 @@ def main() -> int:
                 downgrades.append({"pass": "tiebreak", "claimId": cid,
                                    "from": original, "reason": "no verifiable evidence"})
                 verdict = "unverifiable"
+            # Anything still outside the taxonomy is coerced, not dropped. The
+            # `continue` that used to live here was the last way an
+            # adjudicator's answer could vanish: no verdict change, no
+            # `adjudicated` increment, nothing printed — and the row's evidence
+            # already counted into `ev_stats` above, so the ledgers disagreed
+            # about whether it had been processed at all. A typo, a cased
+            # variant, or a label from a future prompt now lands in
+            # `downgrades` where a reader can see it.
             if verdict not in VERDICTS:
-                continue
+                downgrades.append({"pass": "tiebreak", "claimId": cid,
+                                   "from": original,
+                                   "reason": "unrecognised verdict"})
+                verdict = "unverifiable"
             note = scope_note(v, bounds, verdict)
             if record["verdict"]:
                 final[record["verdict"]] -= 1
@@ -425,7 +436,14 @@ def main() -> int:
             record["verdict"] = verdict
             record["agreement"] = "adjudicated"
             record["reasoning"] = v.get("reasoning") or record["reasoning"]
-            record["scopeNote"] = note or record.get("scopeNote")
+            # Fall back to the consensus note only while the claim still holds.
+            # `scope_note` returns None for a non-`supported` verdict by design;
+            # `note or record.get(...)` then resurrected the supported-era note
+            # onto an overturned claim, so a `contradicted` row rendered under
+            # "claims that hold" and inflated `scopeNotes` — exactly the failure
+            # the verdict guard was added to prevent.
+            record["scopeNote"] = (note or record.get("scopeNote")
+                                   if verdict == "supported" else None)
             if verified:
                 record["evidence"] = verified
             final[verdict] += 1
