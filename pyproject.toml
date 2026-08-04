@@ -1,12 +1,14 @@
 # Test tooling only — this repository is not a Python package. The Python
 # surface under test is the script pipeline in
-# understand-anything-plugin/skills/, exercised by the suites in tests/skill/.
+# understand-anything-plugin/skills/, exercised by the suites in tests/skill/
+# (unit) and tests/integration/ (the multi-stage claim pipeline).
 [tool.pytest.ini_options]
-testpaths = ["tests/skill"]
+testpaths = ["tests/skill", "tests/integration"]
 # The repo root on sys.path so suites can import shared helpers from their
-# conftest as `tests.skill.docs.conftest` (there are no __init__.py files —
-# these are namespace packages).
+# conftest as `tests.skill.docs.conftest` (there are no __init__.py files under
+# tests/skill — those are namespace packages; tests/integration is a real
+# package because the guide's layout calls for one).
 pythonpath = ["."]
 markers = [
-    "pipeline: runs several pipeline stages in sequence to guard an inter-stage contract",
+    "integration: exercises several pipeline stages against real on-disk artifacts",
 ]
