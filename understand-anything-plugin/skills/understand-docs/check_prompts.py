@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""test_prompts.py — guard the invariants the grounding prompts rely on.
+"""check_prompts.py — guard the invariants the grounding prompts rely on.
 
-Run: python3 test_prompts.py          check
-     python3 test_prompts.py --sync   rewrite the shared block, then check
+Run: python3 check_prompts.py          check
+     python3 check_prompts.py --sync   rewrite the shared block, then check
 
 These are not style checks. Each one guards a failure that has actually cost
 something, or that would be invisible if it happened.

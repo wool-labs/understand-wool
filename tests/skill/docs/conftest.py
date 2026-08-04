@@ -80,7 +80,7 @@ def emit_claim_graph() -> Any:
 
 @pytest.fixture(scope="session")
 def prompt_invariants() -> Any:
-    return load_script("test_prompts")
+    return load_script("check_prompts")
 
 
 # ── Corpus builders ───────────────────────────────────────────────────────

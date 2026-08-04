@@ -1112,7 +1112,7 @@ def test_scope_note_should_return_none_when_the_verdict_does_not_hold(
     assert reconcile_verdicts.scope_note(vote, bounds, "unverifiable") is None
 
 
-def test_reconcile_verdicts_should_expose_a_consistent_verdict_vocabulary(
+def test_VERDICTS_should_be_consistent_with_the_other_verdict_constants(
     reconcile_verdicts
 ):
     """Test the module-level verdict contract.

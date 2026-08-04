@@ -59,7 +59,7 @@ So: two passes, then `build_tiebreak_bundle.py` isolates only the disagreements,
 
 `supported` · `contradicted` · `unverifiable`
 
-Defined once in `prompts/_taxonomy.md`, which is included **byte-identical** in both agent prompts — `test_prompts.py --sync` regenerates the copies and the default run asserts they match, because a drift means the adjudicator applies a different rule than the passes it adjudicates, on exactly the claims that were hardest.
+Defined once in `prompts/_taxonomy.md`, which is included **byte-identical** in both agent prompts — `check_prompts.py --sync` regenerates the copies and the default run asserts they match, because a drift means the adjudicator applies a different rule than the passes it adjudicates, on exactly the claims that were hardest.
 
 ### Scope notes, and the fourth verdict that isn't
 

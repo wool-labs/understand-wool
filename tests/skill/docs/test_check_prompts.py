@@ -1,11 +1,17 @@
 """Put the prompt invariants under CI, and guard the region they cannot see.
 
-`understand-anything-plugin/skills/understand-docs/test_prompts.py` holds thirty
-invariants that this taxonomy depends on — and nothing runs it. It sits outside
-`testpaths`, defines no `test_*` functions, and `SKILL.md` documents it as a
+`understand-anything-plugin/skills/understand-docs/check_prompts.py` holds the
+invariants this taxonomy depends on — and nothing ran it. It sits outside
+`testpaths`, defines no `test_*` functions, and `SKILL.md` documented it as a
 manual command. Issue #7's acceptance criterion says the one vocabulary is
-"asserted by test_prompts.py"; until this module existed, it was asserted by
+"asserted by check_prompts.py"; until this module existed, it was asserted by
 whoever remembered to type the command.
+
+The script was called `test_prompts.py`, which made a guide-conformant name for
+this file impossible — `test_<module_name>.py` would have been
+`test_test_prompts.py`. Renaming the script rather than the suite fixes it at
+the root and removes the standing risk that pytest collects a hand-run script if
+`testpaths` ever widens.
 
 The second test covers that script's blind spot. Its withdrawn-verdict guard
 reads only `_taxonomy.md`, and only the markdown-table form — so the `## Output`
@@ -41,14 +47,14 @@ def test_main_should_return_zero_when_every_prompt_invariant_holds(
     Given:
         The prompts and reconciler as committed.
     When:
-        test_prompts.main() runs in check mode.
+        check_prompts.main() runs in check mode.
     Then:
         It should return 0, so every invariant it carries runs in CI rather
         than only when someone remembers the command.
     """
     # Arrange
     prompt_invariants.FAILURES.clear()
-    monkeypatch.setattr(sys, "argv", ["test_prompts.py"])
+    monkeypatch.setattr(sys, "argv", ["check_prompts.py"])
 
     # Act
     code = prompt_invariants.main()
@@ -58,7 +64,7 @@ def test_main_should_return_zero_when_every_prompt_invariant_holds(
 
 
 @pytest.mark.parametrize("prompt", ["ground-claims.md", "tiebreak-verdicts.md"])
-def test_output_schema_should_not_offer_the_withdrawn_verdict(prompt):
+def test_output_section_should_not_offer_the_withdrawn_verdict(prompt):
     """Test the region the shared-block guard cannot see.
 
     Given:
@@ -77,9 +83,7 @@ def test_output_schema_should_not_offer_the_withdrawn_verdict(prompt):
     assert WITHDRAWN not in section
 
 
-def test_taxonomy_verdict_table_should_match_the_declared_vocabulary(
-    reconcile_verdicts
-):
+def test_VERDICTS_should_match_the_taxonomy_verdict_table(reconcile_verdicts):
     """Test that the prompt's verdict table and the script agree exactly.
 
     Given:
