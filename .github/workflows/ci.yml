@@ -32,7 +32,11 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.x'
+          # The declared floor in pyproject.toml, tested exactly. Building on
+          # the floor is what makes it meaningful: '3.x' would silently let a
+          # 3.12-only construct through and break every developer still on the
+          # minimum.
+          python-version: '3.11'
 
       - uses: actions/setup-node@v6
         with:
@@ -63,8 +67,15 @@ jobs:
 
       - name: Test Python skill helpers
         # pytest collects the pre-existing unittest.TestCase suites natively,
-        # so this one invocation covers both styles. testpaths lives in
-        # pyproject.toml.
+        # so this one invocation covers both styles.
+        #
+        # No path argument: an explicit path overrides testpaths, which is how
+        # the integration suite ran nowhere for its first commit. pyproject.toml
+        # decides what runs; this step only decides that it runs.
+        #
+        # pip is upgraded first because `--group` (PEP 735) needs 25.1+, and an
+        # older pip does not fail on the flag so much as install nothing useful.
         run: |
-          pip install pytest pytest-mock hypothesis
-          pytest tests/skill -v
+          python -m pip install --upgrade 'pip>=25.1'
+          python -m pip install --group dev
+          pytest -v

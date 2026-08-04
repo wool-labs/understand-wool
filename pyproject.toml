@@ -1,8 +1,35 @@
-# Test tooling only — this repository is not a Python package. The Python
-# surface under test is the script pipeline in
+# Test tooling only — this repository is not a Python package, so there is no
+# [project] table and nothing here is ever built or installed as a distribution.
+# The Python surface under test is the script pipeline in
 # understand-anything-plugin/skills/, exercised by the suites in tests/skill/
 # (unit) and tests/integration/ (the multi-stage claim pipeline).
+#
+# Toolchain floors, both enforced rather than documented:
+#   Python >= 3.11 — asserted by tests/conftest.py, so a lower interpreter fails
+#                    with a sentence instead of a confusing collection error.
+#   pip    >= 25.1 — the release that added `pip install --group` (PEP 735).
+#                    CI upgrades pip explicitly before using it; without that
+#                    flag an older pip cannot read [dependency-groups] at all
+#                    and silently installs nothing.
+#
+# Install the test dependencies with:
+#   python -m pip install --group dev
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-mock",
+    "hypothesis",
+    # Generates the pairwise covering array in tests/integration/. Required by
+    # the guide's integration-test layout, not optional to it.
+    "allpairspy",
+]
+
 [tool.pytest.ini_options]
+# No explicit path is passed on the command line — including in CI — so this is
+# the single source of truth for what runs. Passing a path as an argument
+# overrides testpaths entirely, which is how the integration suite went
+# uncollected the moment it was added.
 testpaths = ["tests/skill", "tests/integration"]
 # The repo root on sys.path so suites can import shared helpers from their
 # conftest as `tests.skill.docs.conftest` (there are no __init__.py files under
