@@ -9,6 +9,7 @@ the downgrade ladder that decide whether a finding survives as a scope note.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -912,6 +913,156 @@ def test_main_should_keep_the_consensus_note_when_the_adjudicator_omits_one(
     assert claim["scopeNote"]["asSupported"] == NARROWED
 
 
+def test_main_should_drop_the_consensus_note_when_the_adjudicator_contradicts(
+    reconcile_verdicts, mirror, tmp_path, monkeypatch
+):
+    """Test that an overturned claim does not keep its boundary.
+
+    Given:
+        A consensus `supported` claim carrying a scope note, adjudicated
+        `contradicted` by a tie-break vote citing a limiting item.
+    When:
+        main() reconciles with the tie-break.
+    Then:
+        It should carry no scope note and count none, because a claim the
+        adjudicator ruled a defect cannot also hold as far as anything.
+    """
+    # Arrange
+    entry = verdict_entry(
+        "c1", "supported",
+        [evidence(GOOD_LINES, GOOD_CODE), evidence([8], LIMIT_CODE, role="limits")],
+        scope_note={"asSupported": NARROWED},
+    )
+    files = two_pass_corpus(tmp_path, entry, entry)
+    tb = write_json(tmp_path / "tiebreak.json", {"verdicts": [
+        verdict_entry("c1", "contradicted",
+                      [evidence([8], LIMIT_CODE, role="contradicts")]),
+    ]})
+
+    # Act
+    artifact, report = run_main(
+        reconcile_verdicts, tmp_path, monkeypatch, mirror, files,
+        extra=("--tiebreak", str(tb)),
+    )
+
+    # Assert
+    (claim,) = artifact["claims"]
+    assert claim["verdict"] == "contradicted"
+    assert claim["scopeNote"] is None
+    assert artifact["stats"]["scopeNotes"] == 0
+    assert NARROWED not in report.split("## Scope notes")[1]
+
+
+def test_main_should_adjudicate_when_the_tiebreak_verdict_is_unrecognised(
+    reconcile_verdicts, mirror, tmp_path, monkeypatch
+):
+    """Test that no adjudication is discarded for its label alone.
+
+    Given:
+        A split claim and a tie-break vote whose verdict string is outside the
+        taxonomy but whose citation verifies.
+    When:
+        main() reconciles with the tie-break.
+    Then:
+        It should coerce the verdict to `unverifiable`, mark the row
+        adjudicated, and record the original in downgrades — the evidence was
+        already counted, so dropping the row would leave the ledgers
+        disagreeing about whether it was processed.
+    """
+    # Arrange
+    ev = [evidence(GOOD_LINES, GOOD_CODE)]
+    files = two_pass_corpus(
+        tmp_path,
+        verdict_entry("c1", "supported", ev),
+        verdict_entry("c1", "contradicted", ev),
+    )
+    tb = write_json(tmp_path / "tiebreak.json", {"verdicts": [
+        verdict_entry("c1", "partially-supported", ev),
+    ]})
+
+    # Act
+    artifact, _ = run_main(
+        reconcile_verdicts, tmp_path, monkeypatch, mirror, files,
+        extra=("--tiebreak", str(tb)),
+    )
+
+    # Assert
+    (claim,) = artifact["claims"]
+    assert claim["verdict"] == "unverifiable"
+    assert claim["agreement"] == "adjudicated"
+    assert artifact["stats"]["adjudicated"] == 1
+    assert [d for d in artifact["downgrades"]
+            if d["from"] == "partially-supported"
+            and d["reason"] == "unrecognised verdict"]
+
+
+def test_main_should_render_adjudicated_rows_in_the_agreement_table(
+    reconcile_verdicts, mirror, tmp_path, monkeypatch
+):
+    """Test that the report accounts for every claim after a tie-break.
+
+    Given:
+        A split claim resolved by a tie-break vote.
+    When:
+        main() writes the grounding report.
+    Then:
+        The agreement table should carry an `adjudicated` row, so its rows
+        still sum to the claim total rather than silently under-counting.
+    """
+    # Arrange
+    ev = [evidence(GOOD_LINES, GOOD_CODE)]
+    files = two_pass_corpus(
+        tmp_path,
+        verdict_entry("c1", "supported", ev),
+        verdict_entry("c1", "contradicted", ev),
+    )
+    tb = write_json(tmp_path / "tiebreak.json", {"verdicts": [
+        verdict_entry("c1", "supported", ev),
+    ]})
+
+    # Act
+    artifact, report = run_main(
+        reconcile_verdicts, tmp_path, monkeypatch, mirror, files,
+        extra=("--tiebreak", str(tb)),
+    )
+
+    # Assert — the agreement section only; later sections carry tables too.
+    table = report.split("## Verdict agreement across passes")[1].split("## ")[0]
+    rows = dict(re.findall(r"^\| (\w+) \| (\d+) \|", table, re.M))
+    assert rows.get("adjudicated") == "1"
+    assert sum(int(n) for n in rows.values()) == artifact["stats"]["claims"]
+
+
+def test_main_should_name_both_arms_of_the_fold_in_the_report(
+    reconcile_verdicts, mirror, tmp_path, monkeypatch
+):
+    """Test that the fold summary does not claim an outcome it did not produce.
+
+    Given:
+        Two legacy `overstated` votes whose every citation fails verification,
+        so both fold to `unverifiable` rather than `supported`.
+    When:
+        main() writes the grounding report.
+    Then:
+        The report should say so, and the by-outcome breakdown should record
+        no `supported` — telling a reader a bound survived as a scope note
+        when nothing survived is the failure this replaces.
+    """
+    # Arrange
+    entry = verdict_entry("c1", "overstated", [evidence(GOOD_LINES, "not in the mirror")])
+    files = two_pass_corpus(tmp_path, entry, entry)
+
+    # Act
+    artifact, report = run_main(
+        reconcile_verdicts, tmp_path, monkeypatch, mirror, files)
+
+    # Assert
+    by_outcome = artifact["stats"]["foldedOverstatedByOutcome"]
+    assert by_outcome == {"unverifiable": 2}
+    assert "2 to `unverifiable`" in report or "2 to `unverifiable" in report
+    assert "0 to `supported`" in report
+
+
 def test_scope_note_should_prefer_the_current_key_over_the_legacy_one(
     reconcile_verdicts
 ):
@@ -999,7 +1150,7 @@ ANY_VERDICT = st.sampled_from(
 )
 
 
-def reconcile_in_tmp(module, mirror_src, entries_a, entries_b):
+def reconcile_in_tmp(module, mirror_src, entries_a, entries_b, tiebreak=None):
     """Run main() over a fresh one-claim, two-pass corpus. Returns the artifact."""
     with tempfile.TemporaryDirectory() as td, pytest.MonkeyPatch.context() as mp:
         tmp = Path(td)
@@ -1011,13 +1162,53 @@ def reconcile_in_tmp(module, mirror_src, entries_a, entries_b):
         files = [make_pass(passes, "b1-pass1", entries_a),
                  make_pass(passes, "b1-pass2", entries_b)]
         out = tmp / "out"
+        extra = []
+        if tiebreak is not None:
+            extra = ["--tiebreak",
+                     str(write_json(tmp / "tiebreak.json", {"verdicts": tiebreak}))]
         mp.setattr(sys, "argv", [
             "reconcile_verdicts.py", *[str(f) for f in files],
             "--bundles", str(bundles), "--mirror", str(tmp / "mirror"),
-            "--out", str(out), "--label", "t",
+            "--out", str(out), "--label", "t", *extra,
         ])
         assert module.main() == 0
         return json.loads((out / "grounded-t.json").read_text())
+
+
+@settings(max_examples=30, deadline=None)
+@given(verdict=ANY_VERDICT)
+def test_main_should_apply_every_tiebreak_vote_whatever_its_verdict_string(
+    reconcile_verdicts, verdict
+):
+    """Test that the adjudication path never discards a vote for its label.
+
+    Given:
+        A split claim and a tie-break vote carrying any verdict string an agent
+        could emit — including junk, wrong case, and the withdrawn label.
+    When:
+        main() reconciles with the tie-break.
+    Then:
+        The row should always come back adjudicated with a verdict in the
+        taxonomy. The pass path already had this guarantee; driving the same
+        strategy through the tie-break is what would have caught the `continue`
+        that discarded an adjudicator's answer outright.
+    """
+    # Arrange
+    ev = [evidence(GOOD_LINES, GOOD_CODE)]
+
+    # Act
+    artifact = reconcile_in_tmp(
+        reconcile_verdicts, MIRROR_SOURCE,
+        [verdict_entry("c1", "supported", ev)],
+        [verdict_entry("c1", "contradicted", ev)],
+        tiebreak=[verdict_entry("c1", verdict, ev)],
+    )
+
+    # Assert
+    (claim,) = artifact["claims"]
+    assert claim["agreement"] == "adjudicated"
+    assert claim["verdict"] in reconcile_verdicts.VERDICTS
+    assert artifact["stats"]["adjudicated"] == 1
 
 
 @settings(max_examples=30, deadline=None)
