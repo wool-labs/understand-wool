@@ -121,6 +121,13 @@ def scope_note(vote: dict, verified_bounds: list[dict],
 # headed for adjudication regardless, where the displayed value is replaced.
 TIE_PRIORITY = ("contradicted", "unverifiable", "supported")
 
+# Every level `agree` can hold, in report order. Declared rather than spelled
+# out at each call site: the report and the stdout summary each carried their
+# own literal tuple omitting `adjudicated`, so after a tie-break run the rows
+# stopped summing to the claim total and every adjudicated row was invisible in
+# both. One list means a level added later cannot go missing from one surface.
+AGREEMENT_LEVELS = ("unanimous", "majority", "split", "adjudicated", "missing")
+
 STUB_MARKERS = ("<docstring removed>",)
 
 
@@ -463,11 +470,18 @@ def main() -> int:
         "evidenceFailureRate": round(
             ev_stats["evidence BAD"] / max(1, ev_stats["evidence ok"] + ev_stats["evidence BAD"]), 4),
         "downgraded": len(downgrades),
-        # Legacy `overstated` votes resolved to `supported`. Non-zero only when
-        # replaying pass files written under the four-verdict taxonomy; on a
-        # current run it should be 0, and a rising number means an agent is
-        # working from a stale prompt.
+        # Every legacy `overstated` vote SEEN, whatever it resolved to — a vote
+        # whose evidence all failed folds to `unverifiable`, not `supported`,
+        # and counting only the latter would understate how stale the prompt is.
+        # Non-zero only when replaying pass files written under the four-verdict
+        # taxonomy; on a current run it should be 0, and a rising number means
+        # an agent is working from one.
         "foldedOverstated": len(folded),
+        # Broken out because the two arms mean different things to a reader:
+        # `supported` kept its bound as a scope note, `unverifiable` kept
+        # nothing.
+        "foldedOverstatedByOutcome": dict(collections.Counter(
+            f["to"] for f in folded)),
         # How many claims carry a located bound. This is the retrievable output
         # the fourth verdict used to represent, now measured directly.
         "scopeNotes": sum(1 for r in results if r.get("scopeNote")),
@@ -539,14 +553,21 @@ def main() -> int:
         report.append(f"| {k} | {n} | {n / total:.1%} |" if total else f"| {k} | {n} | — |")
     report += ["", "## Verdict agreement across passes\n",
                "| level | n | share |", "|---|---:|---:|"]
-    for k in ("unanimous", "majority", "split", "missing"):
+    for k in AGREEMENT_LEVELS:
         n = agree.get(k, 0)
         report.append(f"| {k} | {n} | {n / total:.1%} |" if total else f"| {k} | {n} | — |")
+    folded_to = stats["foldedOverstatedByOutcome"]
     report += ["",
                f"_{len(downgrades)} verdicts were downgraded to `unverifiable` "
                f"because no cited evidence survived verification._\n",
-               f"_{len(folded)} legacy `overstated` votes were folded into "
-               f"`supported`; the located bound survives as a scope note._\n",
+               # Naming both arms. Saying "folded into `supported`" of a vote
+               # that folded to `unverifiable` tells a reader a bound survived
+               # as a scope note when nothing survived at all.
+               f"_{len(folded)} legacy `overstated` votes were folded: "
+               f"{folded_to.get('supported', 0)} to `supported`, keeping the "
+               f"located bound as a scope note; "
+               f"{folded_to.get('unverifiable', 0)} to `unverifiable` for want "
+               f"of verifiable evidence._\n",
                "## Contradicted — documentation that disagrees with the code\n",
                section("Contradicted", contradicted),
                "## Scope notes — claims that hold, with a located boundary\n",
@@ -561,11 +582,13 @@ def main() -> int:
           f"({stats['evidenceFailureRate']:.1%} bad), {len(downgrades)} verdicts downgraded")
     print("  verdicts:  " + "  ".join(f"{k} {final.get(k, 0)}" for k in VERDICTS))
     if folded:
-        print(f"  folded {len(folded)} legacy `overstated` votes into `supported`")
+        print(f"  folded {len(folded)} legacy `overstated` votes: " + ", ".join(
+            f"{n} to {k}" for k, n in sorted(
+                stats["foldedOverstatedByOutcome"].items())))
     print(f"  scope notes: {stats['scopeNotes']} claims carry a located bound")
     print("  agreement: " + "  ".join(
         f"{k} {agree.get(k, 0)} ({agree.get(k, 0) / total:.0%})" for k in
-        ("unanimous", "majority", "split", "missing") if agree.get(k)))
+        AGREEMENT_LEVELS if agree.get(k)))
     print(f"→ {args.out}/grounded-{args.label}.json")
     print(f"→ {args.out}/grounding-report-{args.label}.md")
     return 0
