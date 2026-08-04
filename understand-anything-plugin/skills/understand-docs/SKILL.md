@@ -87,12 +87,23 @@ Folding it back had a second effect worth knowing: replaying the 813-claim archi
 
 ## Running the tests
 
+From the repository root:
+
 ```bash
-python3 test_prompts.py            # prompt/script taxonomy invariants
-python3 test_prompts.py --sync     # rewrite the shared block into both prompts, then check
+pytest                          # the whole suite — unit + integration
+pytest -m integration           # the multi-stage claim pipeline only
+pytest -m "not integration"     # unit suites only
+```
+
+`tests/skill/docs/` holds one unit suite per script; `tests/integration/` runs the reconcile → lens → emit chain against real on-disk artifacts across a pairwise covering array of the dimensions that vary a run. `check_prompts.py`'s invariants run there too, via `tests/skill/docs/test_check_prompts.py` — they were a manual command for long enough that the taxonomy drifted underneath them.
+
+Two ad-hoc tools, run by hand rather than by CI:
+
+```bash
+python3 check_prompts.py --sync          # rewrite the shared block into both prompts, then check
 python3 lint_claims.py --bundles <DIR>   # extraction-artifact review queue
 ```
 
-Edit the taxonomy in `prompts/_taxonomy.md` and run `--sync`; never hand-edit the copies inside the two prompts. The copies are what the agents read, and a hand-edit that lands in one of them is the exact drift `test_prompts.py` exists to catch.
+Edit the taxonomy in `prompts/_taxonomy.md` and run `--sync`; never hand-edit the copies inside the two prompts. The copies are what the agents read, and a hand-edit that lands in one of them is the exact drift `check_prompts.py` exists to catch.
 
 Requires Python 3.10+ (`X | None` syntax throughout).
