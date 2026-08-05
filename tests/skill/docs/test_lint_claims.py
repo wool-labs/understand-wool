@@ -201,11 +201,11 @@ def test_main_should_restrict_to_verdict_when_grounded_file_supplied(
 
     Given:
         Two flaggable claims, a grounded artifact marking only one of them
-        `overstated`, and --verdicts pointing at that artifact.
+        `contradicted`, and --verdicts pointing at that artifact.
     When:
-        main() lints with the default --verdict overstated.
+        main() lints with the default --verdict contradicted.
     Then:
-        It should lint only the overstated claim.
+        It should lint only the contradicted claim.
     """
     # Arrange
     f = claims_file(tmp_path, [
@@ -215,7 +215,7 @@ def test_main_should_restrict_to_verdict_when_grounded_file_supplied(
             "Start the worker and register it with the pool.", unit="docunit:u2"),
     ])
     grounded = write_json(tmp_path / "grounded.json", {"claims": [
-        {"claimId": "claim:c1", "verdict": "overstated"},
+        {"claimId": "claim:c1", "verdict": "contradicted"},
         {"claimId": "claim:c2", "verdict": "supported"},
     ]})
 
@@ -225,7 +225,7 @@ def test_main_should_restrict_to_verdict_when_grounded_file_supplied(
     )
 
     # Assert
-    assert "1 claims (restricted to verdict `overstated`)" in out
+    assert "1 claims (restricted to verdict `contradicted`)" in out
     assert "dropped qualifier : 1" in out
     assert "one-sided split   : 0" in out
 

@@ -64,11 +64,13 @@ EDGE_MAP = {
 }
 
 # Uppercase for findings, lowercase for status — a reader scanning tags should be
-# able to see at a glance which claims need action. `OVERSTATED` is deliberately
-# not prefixed `DRIFT-`: tags are matched exactly everywhere in the dashboard, so
-# a shared prefix would imply a substring filter groups them when nothing does.
+# able to see at a glance which claims need action.
+#
+# There is no tag for a scope note. A scoped claim is `verified` like any other
+# supported claim, because it is true; the boundary is a qualification on it, not
+# a defect to triage. Tagging it would put it in the same visual bucket as
+# `DRIFT`, which is the mistake the withdrawn `overstated` verdict made.
 VERDICT_TAG = {"supported": "verified",
-               "overstated": "OVERSTATED",
                "contradicted": "DRIFT",
                "unverifiable": "unverified"}
 
@@ -155,6 +157,7 @@ def main() -> int:
         target, how = resolve(unit)
         grounding = claim.get("grounding") or {}
         verdict = grounding.get("verdict")
+        note = grounding.get("scopeNote")
         tags = sorted(set(claim["roles"]))
         tags.append(claim["subsystem"])
         if verdict:
@@ -171,11 +174,11 @@ def main() -> int:
             "summary": claim["claimText"],
             "tags": tags,
             # `complexity` is a CLOSED enum (simple|moderate|complex) in core's
-            # schema, so it cannot carry a fourth level. Treat it as the binary
-            # "is this a finding" channel it already is in practice: both
-            # `contradicted` and `overstated` are findings and should draw the
-            # eye equally. Which *kind* of finding is carried in tags.
-            "complexity": ("complex" if verdict in ("contradicted", "overstated")
+            # schema. Treat it as the binary "is this a finding" channel it
+            # already is in practice: only `contradicted` is a defect a
+            # maintainer must act on. A scoped claim is true and stays at its
+            # ordinary level.
+            "complexity": ("complex" if verdict == "contradicted"
                            else "moderate" if claim["passCount"] >= 4
                            else "simple"),
             # First-class fields rather than more overloading of `complexity`.
@@ -186,12 +189,22 @@ def main() -> int:
             **({"groundingVerdict": verdict} if verdict else {}),
             **({"groundingAgreement": grounding.get("agreement")}
                if grounding.get("agreement") else {}),
+            # Where the claim stops holding, with the citation that proves it.
+            # This is the retrievable half of the withdrawn `overstated` verdict
+            # — and it was already being computed by design_lens and dropped
+            # here, so the graph asserted claims true without their boundaries.
+            **({"scopeNote": note} if note else {}),
             "knowledgeMeta": {
                 "category": claim["roles"][0],
                 "content": claim["claimText"] + (
                     f"\n\nAlso stated in {len(text_group[canon_text(claim['claimText'])]) - 1} "
                     f"other docstring(s)."
-                    if len(text_group[canon_text(claim["claimText"])]) > 1 else ""),
+                    if len(text_group[canon_text(claim["claimText"])]) > 1 else "")
+                # `.get` rather than `[...]`: design-claims files are inputs,
+                # not necessarily this pipeline's own output, and a malformed
+                # note should not abort the whole graph build with a KeyError.
+                + (f"\n\nHolds as far as: {note['asSupported']}"
+                   if isinstance(note, dict) and note.get("asSupported") else ""),
             },
         })
         emitted_claims += 1

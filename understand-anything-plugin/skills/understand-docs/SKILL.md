@@ -45,7 +45,7 @@ Steps 12–14 are the *understanding* half and are independent of 7–11; a grap
 
 `audit_graph_structure.py` is a separate measuring instrument, not part of the sequence — it reports how much of the real call graph a knowledge graph contains.
 
-`lint_claims.py` guards the seam between extraction and grounding. Grounding grades a claim against code; if extraction has already widened the claim past what the docstring said, grounding correctly finds a counterexample and reports a defect the documentation never committed. Measured on wool: 3 of 63 `overstated` verdicts were manufactured that way. 10 flags across 813 claims is the baseline; a jump above it is a prompt regression.
+`lint_claims.py` guards the seam between extraction and grounding. Grounding grades a claim against code; if extraction has already widened the claim past what the docstring said, grounding correctly finds a counterexample and reports a defect the documentation never committed. Measured on wool: 3 of the 63 claims carrying a located boundary were manufactured that way. 10 flags across 813 claims is the baseline; a jump above it is a prompt regression.
 
 ---
 
@@ -57,19 +57,23 @@ So: two passes, then `build_tiebreak_bundle.py` isolates only the disagreements,
 
 ## Verdicts
 
-`supported` · `overstated` · `contradicted` · `unverifiable`
+`supported` · `contradicted` · `unverifiable`
 
-Defined once in `prompts/_taxonomy.md`, which is included **byte-identical** in both agent prompts. `test_prompts.py` asserts that, because a drift between them means the adjudicator applies a different rule than the passes it adjudicates — on exactly the claims that were hardest.
+Defined once in `prompts/_taxonomy.md`, which is included **byte-identical** in both agent prompts — `check_prompts.py --sync` regenerates the copies and the default run asserts they match, because a drift means the adjudicator applies a different rule than the passes it adjudicates, on exactly the claims that were hardest.
 
-`overstated` exists because the three-verdict taxonomy discarded its most actionable output: three independent passes all graded *"reports each dispatch outcome back"* as `supported` while noting, in free text, the case where it does not hold. It requires **two-sided evidence** — a citation that the mechanism exists and one showing where it stops — and a bound-less `overstated` is automatically downgraded to `supported` rather than to `unverifiable`, because losing the bound loses the qualification, not the support.
+### Scope notes, and the fourth verdict that isn't
 
-### The boundary takes two questions, not one
+A claim that is true but narrower than it sounds stays `supported` and carries a **scope note**: the narrowed form the code actually supports, plus a verified `role: "limits"` citation of where it stops. No limiting citation, no note — an unsupported narrowing is an opinion.
 
-The first 813-claim run shipped with a single discriminator — *does anything survive the weakening?* — and it was **too permissive**, measured: 10 claims moved out of `contradicted` against a pre-registered budget of 4, and reading all 10, 7 should have stayed. Both passes agreed on every one, so it was the rule and not agent variance. Almost any false sentence narrows to something that survives.
+There was briefly a fourth verdict, `overstated`, for exactly that case. It produced real findings (39 on the first full run) and was then measured against a control arm: the same 71 boundary-sensitive claims, re-grounded by fresh agents. `contradicted` reproduced **14/14**; `overstated` **17/31**. Rewording the prompt around a harm test scored 52% on the same set, so the instability was the category rather than its definition — a verdict whose whole content is *"there exists an excluded case, and here it is"* depends on a second grader **finding** that case, and eleven of the fourteen misses were graders who did not.
 
-The second question is the fix: **is the excluded case safe to walk into?** A reader who relies on the sentence and lands in the excluded case is either inconvenienced or wrong. Wrong → `contradicted`, however cleanly it narrows. Calibration examples F and G in `_taxonomy.md` are the pair that isolates it: they narrow by the same amount and differ only in what the reader does with the sentence.
+Its evidence never had that problem. Every `overstated` cited a bound that verified, and citation verification has not failed once across ~8,000 checks. So the label was withdrawn and the pointer kept.
 
-`overstatement.readerImpact` is that question made structural, exactly as the bound made the first question structural. Its absence does **not** move the verdict — losing the bound loses the qualification, but a missing impact statement is evidence of nothing, and escalating on it would turn a forgotten field into a false bug report. Those rows are counted as `impactMissing` and routed to adjudication via `build_tiebreak_bundle.py --also-claims`.
+Folding it back had a second effect worth knowing: replaying the 813-claim archive under three verdicts moved agreement from 787 unanimous / 26 split to **809 / 4**. Twenty-two of the twenty-six disputes were `supported` vs `overstated` — the category was generating most of the pipeline's disagreement, which corroborates the control arm from the opposite direction.
+
+`reconcile_verdicts.py` still accepts `overstated` on input (`LEGACY_VERDICTS`) and folds it, so the frozen archive stays replayable. On a current run `foldedOverstated` should be 0; a rising number means an agent is working from a stale prompt.
+
+**Do not re-propose the fourth verdict without a reproduction measurement.**
 
 ---
 
@@ -83,12 +87,23 @@ The second question is the fix: **is the excluded case safe to walk into?** A re
 
 ## Running the tests
 
+From the repository root:
+
 ```bash
-python3 test_prompts.py            # prompt/script taxonomy invariants
-python3 test_prompts.py --sync     # rewrite the shared block into both prompts, then check
+pytest                          # the whole suite — unit + integration
+pytest -m integration           # the multi-stage claim pipeline only
+pytest -m "not integration"     # unit suites only
+```
+
+`tests/skill/docs/` holds one unit suite per script; `tests/integration/` runs the reconcile → lens → emit chain against real on-disk artifacts across a pairwise covering array of the dimensions that vary a run. `check_prompts.py`'s invariants run there too, via `tests/skill/docs/test_check_prompts.py` — they were a manual command for long enough that the taxonomy drifted underneath them.
+
+Two ad-hoc tools, run by hand rather than by CI:
+
+```bash
+python3 check_prompts.py --sync          # rewrite the shared block into both prompts, then check
 python3 lint_claims.py --bundles <DIR>   # extraction-artifact review queue
 ```
 
-Edit the taxonomy in `prompts/_taxonomy.md` and run `--sync`; never hand-edit the copies inside the two prompts. The copies are what the agents read, and a hand-edit that lands in one of them is the exact drift `test_prompts.py` exists to catch.
+Edit the taxonomy in `prompts/_taxonomy.md` and run `--sync`; never hand-edit the copies inside the two prompts. The copies are what the agents read, and a hand-edit that lands in one of them is the exact drift `check_prompts.py` exists to catch.
 
 Requires Python 3.10+ (`X | None` syntax throughout).
