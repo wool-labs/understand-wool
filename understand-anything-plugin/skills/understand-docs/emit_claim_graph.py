@@ -46,6 +46,9 @@ may rely on both without reading anything else:
 - `name` is the full claim text, never an abbreviation, so two distinct claim
   nodes never share a name. Shortening for display is the renderer's job.
 
+Both hold on a re-run as well. Feeding a previous output back in as `--graph`
+replaces the claim layer that run wrote rather than appending a second copy.
+
 Usage:
     python3 emit_claim_graph.py --graph knowledge-graph.json \\
         --design-claims design-claims.json --doc-units doc-units.json \\
@@ -102,6 +105,17 @@ MIXED = "mixed"
 # and are asserted equal to `reconcile_verdicts.VERDICTS`.
 STATUS_TAG = {UNGROUNDED: "ungrounded", MIXED: "mixed"}
 
+# Stamped on every node this script writes, so a later run can find and replace
+# them. `claim` is a shared NodeType — other producers emit claim nodes too —
+# so the type alone does not say whose a node is.
+EMITTER = "understand-docs"
+PRINCIPLE_PREFIX = "concept:principle:"
+# The shape of an id `reconcile_claims.claim_id` mints: `claim:` plus a SHA-256
+# hex digest. Other producers name claims by slug (`claim:<article>:<slug>`),
+# so the shape identifies this pipeline's claim nodes even on a graph written
+# before the stamp existed.
+PIPELINE_CLAIM_ID = re.compile(r"claim:[0-9a-f]{64}")
+
 
 def slug(text: str, limit: int = 60) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
@@ -121,15 +135,40 @@ def main() -> int:
     args = ap.parse_args()
 
     graph = json.loads(args.graph.read_text())
-    nodes: list[dict[str, Any]] = list(graph["nodes"])
-    edges: list[dict[str, Any]] = list(graph["edges"])
-    node_ids = {n["id"] for n in nodes}
-    by_file: dict[str, str] = {n["filePath"]: n["id"] for n in nodes
-                               if n["type"] == "file" and n.get("filePath")}
-
     units = {u["id"]: u for u in json.loads(args.doc_units.read_text())["docUnits"]}
     claims = {c["claimId"]: c
               for c in json.loads(args.design_claims.read_text())["claims"]}
+
+    # ---- remove what an earlier run of this script wrote ----
+    #
+    # The natural workflow emits twice: once ungrounded, again after grounding,
+    # with the first output as the second run's `--graph`. Appending to it would
+    # leave a stale `ungrounded` node beside the fresh `supported` one under the
+    # same id and name, which is the ambiguity this stage exists to prevent.
+    #
+    # The stamp identifies this script's nodes. The id tests cover a graph
+    # written before the stamp existed: every id this run will mint, every
+    # claim node whose id has the shape only this pipeline mints, and the
+    # principle namespace, which nothing else writes into. Matching the shape
+    # matters because a claim id hashes its text: a reworded docstring leaves
+    # the old node under an id no current claim has, with a truncated name and
+    # no verdict, and nothing else would remove it.
+    stale = {n["id"] for n in graph["nodes"]
+             if n.get("emittedBy") == EMITTER
+             or n["id"] in claims
+             or (n.get("type") == "claim"
+                 and PIPELINE_CLAIM_ID.fullmatch(n["id"]))
+             or n["id"].startswith(PRINCIPLE_PREFIX)}
+    nodes: list[dict[str, Any]] = [n for n in graph["nodes"]
+                                   if n["id"] not in stale]
+    edges: list[dict[str, Any]] = [e for e in graph["edges"]
+                                   if e["source"] not in stale
+                                   and e["target"] not in stale]
+    for layer in graph.get("layers") or []:
+        layer["nodeIds"] = [i for i in layer.get("nodeIds", []) if i not in stale]
+    node_ids = {n["id"] for n in nodes}
+    by_file: dict[str, str] = {n["filePath"]: n["id"] for n in nodes
+                               if n["type"] == "file" and n.get("filePath")}
 
     def resolve(unit: dict) -> tuple[str | None, str]:
         """Best existing node for a doc unit: exact -> class -> file."""
@@ -275,6 +314,7 @@ def main() -> int:
             # — and it was already being computed by design_lens and dropped
             # here, so the graph asserted claims true without their boundaries.
             **({"scopeNote": note} if note else {}),
+            "emittedBy": EMITTER,
             "knowledgeMeta": {
                 "category": claim["roles"][0],
                 "content": claim["claimText"] + (
@@ -327,7 +367,7 @@ def main() -> int:
             if len(realized) < 2:
                 dropped_edges["principle with <2 resolvable claims"] += 1
                 continue
-            pid = "concept:principle:" + slug(p["statement"])
+            pid = PRINCIPLE_PREFIX + slug(p["statement"])
             # Two agents can independently find the same principle; merge rather
             # than emit duplicates, keeping the union of evidence.
             if pid in principles:
@@ -376,6 +416,7 @@ def main() -> int:
             "tags": ["design-principle", p["confidence"], *sorted(p["scope"])]
                     + (["has-tension"] if p.get("tension") else []),
             "complexity": "complex" if len(p["realized"]) >= 4 else "moderate",
+            "emittedBy": EMITTER,
             "knowledgeMeta": {
                 "category": "design-principle",
                 "content": p["statement"] + (f"\n\nTrade-off: {p['tension']}"
@@ -475,6 +516,8 @@ def main() -> int:
     graph["nodes"], graph["edges"] = nodes, edges
     args.out.write_text(json.dumps(graph, indent=2, ensure_ascii=False) + "\n")
 
+    if stale:
+        print(f"replaced {len(stale)} node(s) written by an earlier emit")
     print(f"claims emitted:     {emitted_claims} ({assigned} placed in a layer)")
     if unplaced:
         print(f"  WARNING claims with no layer: {dict(unplaced)}")
