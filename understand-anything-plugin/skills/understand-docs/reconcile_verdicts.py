@@ -568,8 +568,6 @@ def main() -> int:
     contradicted = [r for r in results if r["verdict"] == "contradicted"]
     scoped = [r for r in results if r.get("scopeNote")]
     split = [r for r in results if r["agreement"] == "split"]
-    supported = [r for r in results if r["verdict"] == "supported"]
-    unver = [r for r in results if r["verdict"] == "unverifiable"]
 
     report = [
         f"# Grounding report — {args.label}\n",

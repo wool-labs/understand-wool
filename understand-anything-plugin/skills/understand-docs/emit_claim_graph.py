@@ -480,7 +480,7 @@ def main() -> int:
     # A principle spans subsystems by construction; it is listed in each layer
     # it is visible in, so it shows up wherever the reader happens to be looking.
     for pid, p in sorted(principles.items()):
-        for scope in sorted(p["scope"]) or []:
+        for scope in sorted(p["scope"]):
             layer = by_layer_id.get(f"layer:{scope}")
             if layer is not None:
                 layer.setdefault("nodeIds", []).append(pid)

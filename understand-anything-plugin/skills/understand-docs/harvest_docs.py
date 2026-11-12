@@ -40,7 +40,7 @@ import sys
 import tokenize
 import unicodedata
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Iterator, Optional
 
 SCHEMA_VERSION = "0.1.0"
 
@@ -179,7 +179,6 @@ def parse_fields(docstring: str) -> tuple[list[Field], list[dict[str, Any]]]:
                 body_parts.append("")
                 i += 1
                 continue
-            line_indent = len(line) - len(line.lstrip().rjust(len(line.expandtabs(4))))
             line_indent = len(line.expandtabs(4)) - len(line.expandtabs(4).lstrip())
             if line_indent <= indent:
                 break
