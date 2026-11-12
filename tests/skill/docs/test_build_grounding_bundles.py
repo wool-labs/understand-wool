@@ -276,3 +276,85 @@ def test_main_should_emit_every_claim_once_when_bundles_split(
     assert len(targets) == 4  # dict keyed by claimId — presence proves uniqueness
     counts = [c["claimId"] for b in bundles for u in b["units"] for c in u["claims"]]
     assert len(counts) == 4
+
+
+# ── orphaned claims ───────────────────────────────────────────────────────
+
+
+def test_main_should_record_no_orphans_when_every_claim_has_its_doc_unit(
+    build_grounding_bundles, monkeypatch, tmp_path, capsys
+):
+    """Test the orphan record on a correctly paired run.
+
+    Given:
+        A claims file and the doc-units file it was extracted from.
+    When:
+        main() bundles the claims.
+    Then:
+        It should exit 0, print a zero orphan count, and write an orphan file
+        that lists none.
+    """
+    # Arrange
+    files = corpus(tmp_path)
+
+    # Act
+    run_main(build_grounding_bundles, monkeypatch, tmp_path, files)
+
+    # Assert
+    record = json.loads((tmp_path / "bundles" / "orphaned-t.json").read_text())
+    assert (record["orphanedClaims"], record["orphaned"]) == (0, [])
+    assert "orphaned        0 claims" in capsys.readouterr().out
+
+
+def test_main_should_report_and_record_claims_whose_doc_unit_is_absent(
+    build_grounding_bundles, monkeypatch, tmp_path, capsys
+):
+    """Test that a claim with no doc unit is never dropped in silence.
+
+    Given:
+        A claims file in which two of six claims name doc units the doc-units
+        file does not hold.
+    When:
+        main() bundles the claims.
+    Then:
+        It should bundle the other four, exit 1, name the mismatch on stderr,
+        print the orphan count, and write both orphaned claims to the orphan
+        file with their ids, doc units, and text.
+    """
+    # Arrange
+    files = corpus(tmp_path)
+    payload = json.loads(files["claims"].read_text())
+    for cid, uid in (("c-lost-2", "u-other"), ("c-lost-1", "u-gone")):
+        payload["claims"].append({
+            "id": f"claim:{cid}", "docUnitId": f"docunit:{uid}",
+            "claimText": f"claim {cid}", "claimType": "factual",
+            "quantifier": "particular", "sourceQuote": "quote", "passCount": 3,
+        })
+    files["claims"].write_text(json.dumps(payload))
+    out_dir = tmp_path / "bundles"
+    monkeypatch.setattr(sys, "argv", [
+        "build_grounding_bundles.py", "--claims", str(files["claims"]),
+        "--doc-units", str(files["units"]), "--src-root", str(files["src"]),
+        "--label", "t", "--out", str(out_dir)])
+
+    # Act
+    code = build_grounding_bundles.main()
+
+    # Assert
+    captured = capsys.readouterr()
+    bundled = [c["claimId"]
+               for path in sorted(out_dir.glob("ground-t-*.json"))
+               for unit in json.loads(path.read_text())["units"]
+               for c in unit["claims"]]
+    record = json.loads((out_dir / "orphaned-t.json").read_text())
+    assert code == 1
+    assert len(bundled) == 4
+    assert "ORPHANED — 2 claim(s) name 2 doc unit(s)" in captured.err
+    assert "orphaned        2 claims" in captured.out
+    assert (record["orphanedClaims"], record["orphanedDocUnits"]) == (2, 2)
+    assert record["orphaned"] == [
+        {"claimId": "claim:c-lost-1", "docUnitId": "docunit:u-gone",
+         "claimText": "claim c-lost-1"},
+        {"claimId": "claim:c-lost-2", "docUnitId": "docunit:u-other",
+         "claimText": "claim c-lost-2"},
+    ]
