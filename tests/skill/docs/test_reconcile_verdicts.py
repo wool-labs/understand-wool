@@ -174,25 +174,37 @@ def test_verify_evidence_should_reject_when_quote_is_only_stub_body(
     assert "stub" in reason
 
 
-def test_verify_evidence_should_accept_when_lines_off_within_slop(
-    reconcile_verdicts, mirror
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    [([6, 6], True), ([4, 4], True), ([5, 5], True), ([7, 7], True),
+     ([8, 8], True), ([3, 3], False), ([9, 9], False), ([3, 4], True),
+     ([8, 9], True)],
+    ids=["exact", "two-above", "one-above", "one-below", "two-below",
+         "three-above", "three-below", "range-ending-two-above",
+         "range-starting-two-below"],
+)
+def test_verify_evidence_should_allow_two_lines_of_slop_on_either_side(
+    reconcile_verdicts, mirror, lines, expected
 ):
-    """Test the small-slop tolerance for off-by-a-little citations.
+    """Test the width of the evidence window in both directions.
 
     Given:
-        A citation two lines above where its quoted code actually sits.
+        A quote of line 6 of the mirror file, cited at line 6, at one and two
+        lines off in each direction, and at three lines off in each direction.
     When:
         verify_evidence checks the citation.
     Then:
-        It should return ok=True.
+        It should accept a citation within two lines of the quoted line on
+        either side, and reject one three lines away on either side.
     """
     # Act
     ok, _ = reconcile_verdicts.verify_evidence(
-        evidence([4, 5], "if count == 0:"), mirror
+        evidence(lines, "if count == 0:"), mirror
     )
 
     # Assert
-    assert ok
+    assert ok is expected
+    assert reconcile_verdicts.LINE_SLOP == 2
 
 
 @pytest.mark.parametrize(

@@ -23,6 +23,10 @@ dev = [
     # Generates the pairwise covering array in tests/integration/. Required by
     # the guide's integration-test layout, not optional to it.
     "allpairspy",
+    # Static check for unused imports, unused locals, and undefined names in
+    # the claim pipeline and its suites. Run by `pnpm lint:py` and by CI's lint
+    # step, so dead code cannot accumulate between reviews.
+    "pyflakes",
 ]
 
 [tool.pytest.ini_options]

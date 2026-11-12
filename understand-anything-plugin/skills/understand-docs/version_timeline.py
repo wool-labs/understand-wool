@@ -51,7 +51,7 @@ import json
 import re
 import subprocess
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 from typing import Any, Optional
 
@@ -123,8 +123,8 @@ def minor_series(tag: Optional[str]) -> Optional[str]:
 def blame_file(root: Path, rel: str) -> dict[int, tuple[str, int]]:
     """line number → (sha, author_timestamp), for the whole file.
 
-    One blame per file rather than one per doc unit: 49 subprocess calls instead
-    of 420, same result.
+    One blame per file rather than one per doc unit: the same result for a
+    tenth of the subprocess calls on wool, which has 473 doc units in 40 files.
     """
     try:
         raw = git(root, "blame", "--line-porcelain", "--", rel)

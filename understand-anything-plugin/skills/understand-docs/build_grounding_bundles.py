@@ -10,7 +10,7 @@ being handed to an agent directly.
 
 **A claim attached to a `Protocol` cannot be verified where it is written.** The
 docstring on `LoadBalancerLike.delegate` describes a contract; the method body is
-`...`. Measured on wool's load-balancing subsystem, 76% of surviving claims sit on
+`...`. Measured on wool's load-balancing subsystem (180 claims), 76% of surviving claims sit on
 Protocol declarations — 46% on class-level contract docstrings, 30% on stub
 bodies. An agent told to "check the claim against the code" would find no code,
 and the honest verdict for three-quarters of the subsystem would be
@@ -35,7 +35,15 @@ Usage:
         [--max-claims 60] [--out DIR]
 
 Output:
-    <out>/ground-<label>-<n>.json
+    <out>/ground-<label>-<n>.json    the bundles
+    <out>/orphaned-<label>.json      claims whose doc unit is not in --doc-units;
+                                     written on every run, and empty on a
+                                     correctly paired one
+
+`<label>` is `--label`, or the claims file's name without `claims-` and `.json`.
+
+Exit codes: 0; 1 when any claim is orphaned. The bundles are still written, and
+they are incomplete.
 """
 
 from __future__ import annotations
@@ -198,10 +206,21 @@ def main() -> int:
 
     index_cache: dict[str, dict] = {}
     records: list[dict[str, Any]] = []
+    # Claims whose doc unit is not in --doc-units. They cannot be bundled, since
+    # the unit supplies the file and symbol to ground against, and they are
+    # never dropped without a record: a claims file paired with the doc units of
+    # another harvest is the ordinary way this happens, and it used to lose
+    # every such claim with no count, no line of output, and no artifact.
+    orphaned: list[dict[str, Any]] = []
 
     for unit_id, unit_claims in sorted(by_unit.items()):
         unit = units.get(unit_id)
         if unit is None:
+            orphaned.extend(
+                {"claimId": c.get("id") or c.get("claimId"), "docUnitId": unit_id,
+                 "claimText": c.get("claimText")}
+                for c in sorted(unit_claims,
+                                key=lambda x: x.get("id") or x.get("claimId") or ""))
             continue
         src_file = unit["sourceFile"]
         rel = src_file[len(args.path_prefix):] if src_file.startswith(args.path_prefix) else src_file
@@ -288,6 +307,18 @@ def main() -> int:
         }, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
         written.append((path, len(bundle), n_claims, dict(targets)))
 
+    # Written on every run, empty or not, so a stale file from an earlier run
+    # never outlives the run that would have replaced it.
+    orphan_path = args.out / f"orphaned-{label}.json"
+    orphan_path.write_text(json.dumps({
+        "schemaVersion": SCHEMA_VERSION,
+        "claims": str(args.claims),
+        "docUnits": str(args.doc_units),
+        "orphanedClaims": len(orphaned),
+        "orphanedDocUnits": len({o["docUnitId"] for o in orphaned}),
+        "orphaned": orphaned,
+    }, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+
     total_targets: dict[str, int] = defaultdict(int)
     for r in records:
         total_targets[r["groundingTarget"]] += len(r["claims"])
@@ -298,6 +329,15 @@ def main() -> int:
         print(f"  {key:<12} {n:>4} claims ({n / total:.0%})")
     for path, units_n, claims_n, targets in written:
         print(f"  → {path.name}  {units_n} units, {claims_n} claims  {targets}")
+    print(f"  orphaned     {len(orphaned):>4} claims (doc unit not in --doc-units)")
+    if orphaned:
+        print(f"ORPHANED — {len(orphaned)} claim(s) name "
+              f"{len({o['docUnitId'] for o in orphaned})} doc unit(s) that "
+              f"{args.doc_units} does not hold. They are in no bundle and are "
+              f"listed in {orphan_path}. The claims file and the doc-units file "
+              f"come from different harvests: pass the doc-units file the "
+              f"claims were extracted from and run again.", file=sys.stderr)
+        return 1
     return 0
 
 

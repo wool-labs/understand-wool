@@ -42,7 +42,7 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 SCHEMA_VERSION = "0.1.0"
 
@@ -195,12 +195,9 @@ def seed_vocabulary(doc_units: list[dict], subsystem_of: dict[str, str]) -> tupl
     # the field body, and belongs after Phase B.
     aliases: list[dict] = []
     names = sorted(uses)
-    seen: set[tuple[str, str]] = set()
     for i, a in enumerate(names):
         toks_a = [tokens(b) for _, _, b in uses[a] if b]
         for b in names[i + 1:]:
-            if (a, b) in seen:
-                continue
             toks_b = [tokens(x) for _, _, x in uses[b] if x]
             best = 0.0
             for ta in toks_a:
@@ -212,7 +209,6 @@ def seed_vocabulary(doc_units: list[dict], subsystem_of: dict[str, str]) -> tupl
                         continue
                     best = max(best, len(ta & tb) / union)
             if best >= ALIAS_JACCARD:
-                seen.add((a, b))
                 aliases.append({
                     "names": [a, b],
                     "jaccard": round(best, 3),

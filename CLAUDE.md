@@ -39,6 +39,7 @@ An open-source tool combining LLM intelligence + static analysis to produce inte
 - `pnpm --filter @understand-anything/dashboard build` — Build the dashboard
 - `pnpm dev:dashboard` — Start dashboard dev server
 - `pnpm lint` — Run ESLint across the project
+- `pnpm lint:py` — Run pyflakes over the understand-docs pipeline scripts and their Python suites (needs the `dev` dependency group from `pyproject.toml`)
 
 ## Conventions
 - TypeScript strict mode everywhere

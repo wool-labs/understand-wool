@@ -10,11 +10,11 @@ Not a user-facing slash command. These scripts are run in sequence by an operato
 
 Three constraints drive nearly every design decision here, and all three were measured rather than assumed:
 
-**Extraction is not deterministic, so it is repeated.** Five independent agents extract from the same doc units; claims that fewer than three passes produce are dropped. Canonical-form rules in the extraction prompt moved agreement 41% → 59% on wool with no other change — prompt text is the highest-leverage lever in this pipeline.
+**Extraction is not deterministic, so it is repeated.** Five independent agents extract from the same doc units; claims that fewer than three passes produce are dropped. Canonical-form rules in the extraction prompt moved agreement on wool's load-balancing subsystem from 41.5% to 60.0% (claims of all four types produced by at least two of five passes, exact match under the shipped normaliser) with no other change — prompt text is the highest-leverage lever in this pipeline.
 
 **Verification must not be circular.** Claims come *from* docstrings, so an agent verifying one will happily quote the docstring back as proof. `strip_docstrings.py` removes the option: agents read a mirror where every docstring is blanked but **line numbers are preserved**, so cited evidence still maps to the real file. Code that shares a line with a docstring stays in the mirror, and a file that cannot be parsed is left out of the mirror, because a verbatim copy would carry its docstrings.
 
-**Evidence is checked, not trusted.** Every citation names a file, a line range, and a verbatim quote — all three machine-verified against the mirror before any consensus is computed. The file must resolve to a location inside the mirror: a path that leaves it through `..`, a symlink, or an absolute path is rejected with the reason `citation escapes the mirror`, since the file it reaches still has its docstrings. Such a citation is more than a bad citation: it shows the pass read source outside the mirror, so step 8 prints a `WARNING … citation(s) escape the mirror` line naming the pass. A consensus over fabricated citations launders a guess into a number. Measured across two rounds: 4,273 citations, 0 rejected.
+**Evidence is checked, not trusted.** Every citation names a file, a line range, and a verbatim quote — all three machine-verified against the mirror before any consensus is computed. Every non-blank line of the quote must appear within two lines of the cited range, on either side. The file must resolve to a location inside the mirror: a path that leaves it through `..`, a symlink, or an absolute path is rejected with the reason `citation escapes the mirror`, since the file it reaches still has its docstrings. Such a citation is more than a bad citation: it shows the pass read source outside the mirror, so step 8 prints a `WARNING … citation(s) escape the mirror` line naming the pass. A consensus over fabricated citations launders a guess into a number. Measured across every archived wool round: 9,485 citations checked, 1 rejected. That one quoted an attribute docstring the first mirror had failed to strip; it verified against that mirror and is rejected against the current one. The two-line tolerance is not what produces the figure: 9,484 of the 9,485 match their cited range exactly, with no tolerance.
 
 ---
 
@@ -29,9 +29,10 @@ Each script is deterministic, stdlib-only, and prints what it did. Nothing here 
 | 2b | **Version timeline** (optional) | `version_timeline.py` | `version-timeline.json` |
 | 3 | **Strip** docstrings into a mirror | `strip_docstrings.py --verify` | mirror tree |
 | 4 | **Extract claims** — *N agents per subsystem, identical prompt* | agents + `prompts/extract-claims.md` | `claims-<sub>-pass<N>.json` |
+| 4b | **Check quotes** — must exit 0 before step 5 | `lint_claims.py --doc-units --quotes-only` | pass or fail on stdout |
 | 5 | **Reconcile** passes into a claim set | `reconcile_claims.py` | `claims-<sub>.json` + rejected/excluded |
-| 5b | **Lint** claims against their source quotes | `lint_claims.py` | review queue on stdout |
-| 6 | **Bundle** claims for grounding | `build_grounding_bundles.py` | `ground-<sub>-<n>.json` |
+| 5b | **Lint** claims against their source quotes | `lint_claims.py --doc-units` | review queue on stdout |
+| 6 | **Bundle** claims for grounding — must exit 0 | `build_grounding_bundles.py` | `ground-<sub>-<n>.json`, `orphaned-<sub>.json` |
 | 7 | **Ground** — *2 agents per bundle* | agents + `prompts/ground-claims.md` | `<bundle>-pass<N>.json` |
 | 8 | **Reconcile verdicts** | `reconcile_verdicts.py` | `grounded-<label>.json`, report |
 | 9 | **Tie-break bundle** — disputed claims only | `build_tiebreak_bundle.py` | `tiebreak-<label>.json` |
@@ -87,6 +88,48 @@ In every other case, stop. Steps 1 and 3 read files the same way, so a file step
 | `LEAK` | A docstring other than the `<docstring removed>` marker is still in the mirror, at the file and line listed. | Stop, as above. |
 | `SYMBOL LOST` | A class or function in the source is absent from the mirror at its line. A grader looking for it would find nothing and answer `unverifiable`. | Stop, as above. |
 
+**Step 4b gates step 5: every `sourceQuote` must be in its doc unit.** The extraction prompt tells agents the quote is checked, and the reconciler merges two passes' wordings on the strength of it. For each subsystem, run the check over that subsystem's pass files and the doc-units file step 1 wrote:
+
+```bash
+python3 lint_claims.py claims-<sub>-pass1.json claims-<sub>-pass2.json ... --doc-units doc-units.json --quotes-only
+```
+
+It prints the number of claims read from each file, then exits 0 when every quote of every claim appears in the `text` of the doc unit its claim names, as one contiguous span that matches exactly apart from line breaks and runs of spaces. Confirm that every pass file is listed with the number of claims you expect. It exits 1 otherwise, and prints one `QUOTE` block per failure with the reason and, in brackets, the pass file it came from, or a `FAIL: no claims read from …` line for a pass file that held none. Act on the reason:
+
+| reason | what it means | what to do |
+|---|---|---|
+| `doc unit … is not in --doc-units`, on most claims of every pass | The passes were extracted from a different harvest than the file passed. | Pass the doc-units file the extraction agents were given, and run the check again. Do not re-run extraction. |
+| `doc unit … is not in --doc-units`, on a few claims of a pass whose other claims resolve | The agent miscopied or omitted a `docUnitId`. | Discard the pass file named in brackets and re-run that one extraction pass, then run the check again. |
+| `the quote is not in the doc unit's text` | The agent paraphrased, re-cased, joined two parts with `...`, or invented the quote. | As the row above. Do not edit the quote or delete the claim by hand. |
+| `the claim has no sourceQuote` | The agent omitted the field. | As above. |
+| `FAIL: no claims read from …` | The pass file is empty or malformed. | As above. |
+
+Do not start step 5 until the check exits 0 for every subsystem. If a pass fails the check again after one re-run, stop and tell the user which pass and which quotes; do not re-run it a third time.
+
+**Step 5b reviews the reconciled claims.** `lint_claims.py` guards the seam between extraction and grounding: a claim that asserts more than its docstring did makes grounding report a defect the documentation never committed. For each subsystem, pass the one file of surviving claims step 5 wrote, `claims-<sub>.json`:
+
+```bash
+python3 lint_claims.py claims-<sub>.json --doc-units doc-units.json
+```
+
+Name the file; do not use a `claims-*.json` glob. Step 5 writes `claims-rejected-<sub>.json` and `claims-excluded-<sub>.json` in the same directory, and step 4's pass files match the same pattern. The script skips the rejected and excluded files with a `SKIPPED` line on stderr; it cannot tell a pass file from a claim set, and linting pass files here inflates every count.
+
+It prints three count lines, then one block per flag:
+
+| stdout line | what a flag means | what to do |
+|---|---|---|
+| `quote not in unit` | As in step 4b, for the one representative quote the reconciler kept per claim. | It should be 0, since the passes were checked at step 4b. If it is not, the pass files were changed or step 4b was skipped: go back to step 4b. |
+| `dropped qualifier` | The quote narrows with `when`, `only`, `unless`, `via`, or similar, and the claim does not carry the condition. | See below. |
+| `one-sided split` | The quote coordinates two things and the claim asserts one, with no other claim on the same doc unit in the same file carrying the other. | See below. |
+
+A `dropped qualifier` or `one-sided split` flag is a claim to read with care, and the claim set is not changed on its account. Continue to step 6 with every claim as it is; do not edit a `claimText`, which would change the claim's id, and do not delete the claim. Record the flagged claim ids, and when you report the run, list them and mark any `contradicted` verdict on one of them as resting on a claim the linter flagged.
+
+On wool's 813-claim grounding set the baseline is 0 quotes missing, 3 dropped qualifiers, and 7 one-sided splits, 10 review flags or 1.2% of claims, with each of its two subsystems checked against the doc-units file of its own harvest. If the two review counts together exceed 2.5% of the claims linted, twice that rate, stop before step 6 and tell the user: the extraction prompt is the likely cause.
+
+Exit codes: 0 when no quote is missing; 1 when any quote is missing, or when `--max-flags N` is given and the two review counts together exceed `N`; 2 when no claims were read. The two review counts do not fail the run on their own, so read them. Without `--doc-units` the `quote not in unit` line reads `not checked (pass --doc-units)` and the quotes are unverified.
+
+**Step 6 must exit 0.** `build_grounding_bundles.py` prints an `orphaned` count with its bundle list and writes `orphaned-<sub>.json` beside the bundles on every run (`<sub>` is the claims file's name without `claims-` and `.json`, unless `--label` overrides it). A claim is orphaned when the doc unit it names is not in `--doc-units`; it is in no bundle and will receive no verdict. When there are any, the script prints an `ORPHANED` line on stderr and exits 1. With step 4b passed against the same doc-units file, the only cause is a different doc-units file at this step: pass the one used at step 4b and run step 6 again. Do not dispatch grounding agents on the bundles of a run that exited 1.
+
 Steps 12–14 are the *understanding* half and are independent of 7–11; a graph can be emitted with claims ungrounded, and each such claim node then reads `groundingVerdict: "ungrounded"` (see [Reading a claim node](#reading-a-claim-node)).
 
 **To add verdicts to a graph that was emitted ungrounded**, run these in order:
@@ -104,13 +147,11 @@ A status absent from either line has a count of zero. A `WARNING unmapped verdic
 
 `audit_graph_structure.py` is a separate measuring instrument, not part of the sequence — it reports how much of the real call graph a knowledge graph contains.
 
-`lint_claims.py` guards the seam between extraction and grounding. Grounding grades a claim against code; if extraction has already widened the claim past what the docstring said, grounding correctly finds a counterexample and reports a defect the documentation never committed. Measured on wool: 3 of the 63 claims carrying a located boundary were manufactured that way. 10 flags across 813 claims is the baseline; a jump above it is a prompt regression.
-
 ---
 
 ## Grounding: two passes plus an adaptive tie-break
 
-Blanket triple-passing wastes agents. Measured on wool, two independent passes agreed on **98.2%** of 813 claims; only 15 needed a third opinion, and every one of those landed on one of the two priors.
+Blanket triple-passing wastes agents. Measured on wool in the three-verdict round, two independent passes agreed on **98.2%** of 813 claims (798 unanimous, 15 split); only those 15 needed a third opinion, and every one of them landed on one of the two priors.
 
 So: two passes, then `build_tiebreak_bundle.py` isolates only the disagreements, and one adjudicator resolves them with both priors in view. That is deliberate asymmetry — extraction passes are kept blind from each other because they want independent samples; adjudication wants the *best* answer, and the disagreement is itself evidence.
 
@@ -124,11 +165,11 @@ Defined once in `prompts/_taxonomy.md`, which is included **byte-identical** in 
 
 A claim that is true but narrower than it sounds stays `supported` and carries a **scope note**: the narrowed form the code actually supports, plus a verified `role: "limits"` citation of where it stops. No limiting citation, no note — an unsupported narrowing is an opinion.
 
-There was briefly a fourth verdict, `overstated`, for exactly that case. It produced real findings (39 on the first full run) and was then measured against a control arm: the same 71 boundary-sensitive claims, re-grounded by fresh agents. `contradicted` reproduced **14/14**; `overstated` **17/31**. Rewording the prompt around a harm test scored 52% on the same set, so the instability was the category rather than its definition — a verdict whose whole content is *"there exists an excluded case, and here it is"* depends on a second grader **finding** that case, and eleven of the fourteen misses were graders who did not.
+There was briefly a fourth verdict, `overstated`, for exactly that case. It produced real findings (53 on the first full run, 39 of them on claims the three-verdict round had graded `supported`) and was then measured against a control arm: the same 71 boundary-sensitive claims, re-grounded by fresh agents. `contradicted` reproduced **14/14**; `overstated` **17/31**, counting the 31 claims both passes had graded `overstated`. Rewording the prompt around a harm test scored 52% on the same set, so the instability was the category rather than its definition — a verdict whose whole content is *"there exists an excluded case, and here it is"* depends on a second grader **finding** that case, and eleven of the fourteen misses were graders who did not.
 
-Its evidence never had that problem. Every `overstated` cited a bound that verified, and citation verification has not failed once across ~8,000 checks. So the label was withdrawn and the pointer kept.
+Its evidence never had that problem. Every `overstated` cited a bound that verified, as do 9,484 of the 9,485 citations in the archive. So the label was withdrawn and the pointer kept.
 
-Folding it back had a second effect worth knowing: replaying the 813-claim archive under three verdicts moved agreement from 787 unanimous / 26 split to **809 / 4**. Twenty-two of the twenty-six disputes were `supported` vs `overstated` — the category was generating most of the pipeline's disagreement, which corroborates the control arm from the opposite direction.
+Folding it back had a second effect worth knowing: replaying the four-verdict round's pass files for the same 813 claims under three verdicts moved agreement from 787 unanimous / 26 split to **809 / 4**. (The 798 / 15 above is the earlier three-verdict round, a separate set of passes over the same claims.) Twenty-two of the twenty-six disputes were `supported` vs `overstated` — the category was generating most of the pipeline's disagreement, which corroborates the control arm from the opposite direction.
 
 `reconcile_verdicts.py` still accepts `overstated` on input (`LEGACY_VERDICTS`) and folds it, so the frozen archive stays replayable. On a current run `foldedOverstated` should be 0; a rising number means an agent is working from a stale prompt.
 
@@ -218,7 +259,8 @@ Uniqueness survives re-emission. Running step 14 with a previous output as `--gr
 - **A file enters the mirror stripped or not at all.** `strip_docstrings.py` never copies a file it could not parse.
 - **Evidence verification runs before consensus**, never after.
 - **Quorum counts distinct pass indices**, never a sum. Summing lets one pass clear quorum alone by emitting two wordings of the same assertion.
-- **Excluded and rejected claims are written out**, never dropped silently.
+- **Excluded, rejected, and orphaned claims are written out**, never dropped silently. `reconcile_claims.py` writes the first two; `build_grounding_bundles.py` writes `orphaned-<sub>.json` and exits 1 when it is not empty.
+- **Every `sourceQuote` is checked against its doc unit** by `lint_claims.py --doc-units --quotes-only` over the pass files, at step 4b. The extraction prompt promises agents the check, and the reconciler keeps only one quote per surviving claim, so the pass files are the only place every quote can be checked.
 - **Every claim node carries `groundingVerdict`, and `name` is never abbreviated.** An absent verdict reads as "inconclusive" to a consumer; a truncated name makes two claims one.
 - **Claim IDs are content hashes** (`docUnitId` + normalized text). Re-deriving them on a changed corpus invalidates any paired before/after comparison.
 
@@ -234,11 +276,10 @@ pytest -m "not integration"     # unit suites only
 
 `tests/skill/docs/` holds one unit suite per script; `tests/integration/` runs the reconcile → lens → emit chain against real on-disk artifacts across a pairwise covering array of the dimensions that vary a run. `check_prompts.py`'s invariants run there too, via `tests/skill/docs/test_check_prompts.py` — they were a manual command for long enough that the taxonomy drifted underneath them.
 
-Two ad-hoc tools, run by hand rather than by CI:
+One tool is run by hand rather than by CI:
 
 ```bash
 python3 check_prompts.py --sync          # rewrite the shared block into both prompts, then check
-python3 lint_claims.py --bundles <DIR>   # extraction-artifact review queue
 ```
 
 Edit the taxonomy in `prompts/_taxonomy.md` and run `--sync`; never hand-edit the copies inside the two prompts. The copies are what the agents read, and a hand-edit that lands in one of them is the exact drift `check_prompts.py` exists to catch.

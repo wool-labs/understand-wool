@@ -16,9 +16,11 @@ NULL` is one field and two assertions), so a flagged field marks every claim
 later derived from it for review rather than deciding anything.
 
 Suppression rules exist because a naive implementation is mostly false
-positives. Measured on wool: 55 raw flags, of which 16 were Protocol stubs and
-~30 were transitively-raised exceptions. See `--explain` for per-suppression
-counts.
+positives. Measured by running this script on wool at commit c3b62b97: 62
+candidates survive, and the rules suppress 111
+more — 23 on Protocol methods, 12 on stubs, 10 raised by a callee in the same
+module, 26 with a callee that cannot be resolved, 37 by visibility, 3 by
+overload. `--explain` prints the per-suppression counts for any corpus.
 
 Usage:
     python3 harvest_docs.py <repo-root> [--src PATH]... [--out DIR] [--explain]
@@ -40,7 +42,7 @@ import sys
 import tokenize
 import unicodedata
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Iterator, Optional
 
 SCHEMA_VERSION = "0.1.0"
 
@@ -179,7 +181,6 @@ def parse_fields(docstring: str) -> tuple[list[Field], list[dict[str, Any]]]:
                 body_parts.append("")
                 i += 1
                 continue
-            line_indent = len(line) - len(line.lstrip().rjust(len(line.expandtabs(4))))
             line_indent = len(line.expandtabs(4)) - len(line.expandtabs(4).lstrip())
             if line_indent <= indent:
                 break
@@ -198,13 +199,12 @@ def parse_fields(docstring: str) -> tuple[list[Field], list[dict[str, Any]]]:
 # Doc-unit splitting
 # ---------------------------------------------------------------------------
 
-# Above this, a docstring is split at reST structure boundaries. Measured on wool
-# (CLAIM-GRAPH-PLAN §1.8): doc units under ~2000 chars reconcile at 78% agreement
-# across 5 independent extraction passes, units above it at 52%. A 7KB docstring
-# yields ~160 claim clusters and five agents will never segment 160 assertions the
-# same way — that is a decomposition problem, not a matching problem, so no
-# similarity threshold fixes it. 24 of wool's 429 doc units (5.6%) exceed this and
-# carry 32% of all documentation text.
+# Above this, a docstring is split at reST structure boundaries. Long docstrings
+# reconcile worse than short ones across independent extraction passes. One 7KB
+# docstring in wool yields 160 claim clusters, and five agents will never segment
+# 160 assertions the same way — that is a decomposition problem, not a matching
+# problem, so no similarity threshold fixes it. 32 of wool's 429 unsplit doc units
+# (7.5%) exceed this and carry 37% of all documentation text.
 SPLIT_THRESHOLD = 1800
 # Never emit a sliver; fold it into the previous part instead.
 MIN_PART_CHARS = 300

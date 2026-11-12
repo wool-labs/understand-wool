@@ -54,7 +54,6 @@ import ast
 import collections
 import json
 from pathlib import Path
-from typing import Any
 
 
 def qualname_index(tree: ast.AST) -> dict[int, str]:
@@ -141,7 +140,6 @@ def main() -> int:
             continue
 
         defs: list[tuple[int, int, str]] = []
-        qi = qualname_index(tree)
 
         def collect(node: ast.AST, prefix: str = "") -> None:
             for child in getattr(node, "body", []):

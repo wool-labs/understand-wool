@@ -12,7 +12,8 @@ Two tiers:
 
   TIER 1  exact match on `contentHash(docUnitId + normalize(claimText))`.
           Free. Normalization strips reST/markdown markup, articles, and
-          possessives — markup alone was worth 18 points of agreement on wool.
+          possessives — markup alone was worth 18 points of agreement at three
+          of five passes on wool's load-balancing subsystem.
 
   TIER 2  single-linkage lexical clustering within one doc unit, over
           `difflib` similarity, **gated by sourceQuote overlap**.
@@ -20,11 +21,11 @@ Two tiers:
 The quote gate is the load-bearing half. Lexical similarity systematically
 mis-merges the two halves of a disjunction — precisely the claims the extraction
 prompt instructs agents to split, since the halves share nearly the whole
-sentence stem. Measured on wool: bad merges scored 0.871/0.903 on claim text,
-good merges 0.929/0.890 — claim similarity alone cannot separate them. But good
-merges quote the *identical* span (1.000) and bad merges quote different spans
-(0.636, 0.556). Requiring quote overlap blocks the failure for ~2 points of
-agreement.
+sentence stem. Measured on wool's load-balancing subsystem: two such bad merges
+scored 0.881 and 0.903 on claim text, as high as correct merges score, so claim
+similarity alone cannot separate them. Their quotes overlapped at only 0.636
+and 0.556, where a correct merge quotes the same span. Requiring quote overlap
+blocks the failure for about 2 points of agreement.
 
 Quorum counts **distinct pass indices** in a cluster, never a sum. Summing lets
 one pass clear quorum by itself when it emits two near-duplicate wordings of the
@@ -139,8 +140,9 @@ def main() -> int:
     ap.add_argument("--label", default=None)
     # illustrative/aspirational claims never reach Phase E grounding, and they
     # do not canonicalize: a code example has no single right phrasing, so five
-    # independent passes produce five different claims about it. On wool they
-    # are 7% of volume and cost ~6 points of measured agreement. Filtered before
+    # independent passes produce five different claims about it. On wool's
+    # dispatch-api subsystem they are 8-9% of volume and cost about 6 points of
+    # measured agreement; across all three subsystems they are 6% of volume. Filtered before
     # reconciliation, retained in the excluded file — never silently dropped.
     ap.add_argument("--types", default="factual,instructional",
                     help="comma-separated claimTypes to reconcile; 'all' to disable")

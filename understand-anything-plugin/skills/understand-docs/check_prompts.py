@@ -95,7 +95,8 @@ def main() -> int:
           'BOUND_ROLES = ("limits", "contradicts")' in reconcile)
 
     # The fourth verdict was withdrawn after a control arm measured it
-    # reproducing at 17/31 against `contradicted`'s 14/14. Nothing should
+    # reproducing at 17/31 (of the claims both passes had graded `overstated`)
+    # against `contradicted`'s 14/14. Nothing should
     # reintroduce it, and the taxonomy should say why so the next reader does
     # not re-propose it from first principles.
     check("no verdict named `overstated` survives in the taxonomy",
