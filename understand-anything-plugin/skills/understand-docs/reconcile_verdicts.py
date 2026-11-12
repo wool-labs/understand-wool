@@ -20,8 +20,9 @@ checks them:
 An item failing any of these is `unverified`. A verdict of `supported` or
 `contradicted` whose evidence is entirely unverified is **downgraded to
 `unverifiable`** before consensus, and counted. This is the only defense against
-an agent that reasons well and cites carelessly, and on a first run it is
-normally non-zero.
+an agent that reasons well and cites carelessly. In the archived wool runs the
+count is zero: 9,484 of 9,485 citations verify, and the claim behind the one
+rejected citation kept its verdict on its others.
 
 **2. Reconcile.** Per claim, take the majority verdict across passes. Report:
 
@@ -60,7 +61,8 @@ SCHEMA_VERSION = "0.1.0"
 # There were briefly four. `overstated` — the claim is true but promises more
 # than the code delivers — was built, shipped, and then measured against a
 # control arm: re-grounding the same 71 claims with fresh agents reproduced
-# `contradicted` 14/14 and `overstated` only 17/31. Rewording the prompt did not
+# `contradicted` 14/14 and `overstated` only 17 of the 31 claims both passes
+# had graded `overstated`. Rewording the prompt did not
 # help (52% on the same set), because the instability is the category: a verdict
 # whose whole content is "there exists an excluded case, and here it is" depends
 # on a second grader *finding* that case, and eleven of the fourteen misses were

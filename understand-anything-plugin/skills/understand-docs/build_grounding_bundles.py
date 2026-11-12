@@ -10,7 +10,7 @@ being handed to an agent directly.
 
 **A claim attached to a `Protocol` cannot be verified where it is written.** The
 docstring on `LoadBalancerLike.delegate` describes a contract; the method body is
-`...`. Measured on wool's load-balancing subsystem, 76% of surviving claims sit on
+`...`. Measured on wool's load-balancing subsystem (180 claims), 76% of surviving claims sit on
 Protocol declarations — 46% on class-level contract docstrings, 30% on stub
 bodies. An agent told to "check the claim against the code" would find no code,
 and the honest verdict for three-quarters of the subsystem would be

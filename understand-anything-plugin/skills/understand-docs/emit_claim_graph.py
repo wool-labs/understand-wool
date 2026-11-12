@@ -10,9 +10,11 @@ carries the principles, and the Knowledge edge category (`documents`,
 
 **The join is free.** A doc unit's `attachedTo` is `kind:file:qualname`, which is
 byte-identical to the knowledge graph's node id format
-(`class:wool/src/.../base.py:LoadBalancerLike`). Measured on wool, 77% of claims
-hit an existing node exactly. The remainder are functions the curated graph does
-not carry as their own nodes, so linkage falls back:
+(`class:wool/src/.../base.py:LoadBalancerLike`). How many claims hit an existing
+node exactly depends on how much of the code the graph models: on wool, 61% on
+the first load-balancing graph and 99% (1,770 of 1,784) on the graph Part C
+queried. The remainder are functions the graph does not carry as their own
+nodes, so linkage falls back:
 
     exact symbol  ->  containing class  ->  containing file
 

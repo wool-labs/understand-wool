@@ -7,8 +7,9 @@ Deterministic, stdlib only, no LLM.
 **This is the anti-circularity control, and it is the load-bearing part of
 grounding.** A grounding agent asked "does the code support this claim?" will,
 given the chance, quote the very docstring the claim was extracted from. That is
-not evidence — it is the claim restated. On wool's `loadbalancer/base.py`, 71% of
-the file is docstring, so an agent reading the real file is mostly reading prose.
+not evidence — it is the claim restated. On wool's `loadbalancer/base.py`,
+docstrings are 72% of the file's characters and 60% of its lines, so an agent
+reading the real file is mostly reading prose.
 
 The mirror removes the temptation structurally rather than by instruction:
 
@@ -67,10 +68,12 @@ def docstring_statements(tree: ast.AST) -> list[ast.Expr]:
     docstrings — a string literal following an assignment — are invisible to
     `ast.get_docstring`, so an earlier version left 10 of them intact in wool
     (`_STOP_RPC_MARGIN`, the discovery predicates, the proxy defaults). A
-    grounding agent noticed and reported it. No evidence citation ever landed on
-    one, and claims are only ever extracted from module/class/function
-    docstrings, so nothing was contaminated — but a control that is 99% airtight
-    is not a control, it is a habit.
+    grounding agent noticed and reported it. One evidence citation of the 9,485
+    in the archive did land on one: it quoted the attribute docstring under
+    `DEFAULT_QUORUM` in `proxy.py`, verified against that mirror, and is
+    rejected against the current one. The claim kept its verdict on three other
+    citations, so nothing was contaminated — but a control that blanks 429 of
+    439 strings is not a control, it is a habit.
     """
     found: list[ast.Expr] = []
     for node in ast.walk(tree):

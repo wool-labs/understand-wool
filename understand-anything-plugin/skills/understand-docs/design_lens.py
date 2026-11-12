@@ -9,8 +9,8 @@ The validation pipeline asks "is this claim true?". A design graph asks "why is
 the system shaped this way?", and that question needs different structure:
 
 **Design roles.** A claim's grammatical shape predicts its explanatory function.
-Measured over 960 factual claims from three wool subsystems, ~10% carry
-design-philosophy language and the rest are mechanical detail. The roles below
+Measured over 960 factual claims from three wool subsystems, 146 (15%) take a
+role other than `mechanism` and the rest are mechanical detail. The roles below
 separate them:
 
     rationale       why a choice was made — "coupling X with Y forces every
@@ -221,7 +221,7 @@ def main() -> int:
     # to be what it explains — the `justifies` candidates.
     #
     # Neighbours are RANKED, not merely collected. Plain symbol overlap is far too
-    # loose here: `WorkerProxy` appears in 130+ claims, so every rationale claim
+    # loose here: `WorkerProxy` appears in about 160 of wool's 1,033 claims, so every rationale claim
     # mentioning it pulled in the same undifferentiated 40, and two unrelated
     # rationales produced near-identical blocks. Ranking uses inverse symbol
     # frequency, so a shared rare symbol (`_delegate_dispatch`) counts for much

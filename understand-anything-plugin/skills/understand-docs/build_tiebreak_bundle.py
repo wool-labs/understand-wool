@@ -6,8 +6,9 @@ Deterministic, stdlib only, no LLM.
 Grounding runs two independent passes. Where they agree, the verdict stands;
 where they differ, a third pass is dispatched on **just those claims**. This is
 cheaper than a blanket third pass and targets effort where it is actually needed:
-on wool's load-balancing subsystem 91.4% of verdicts were unanimous, so a full
-third pass would have re-derived the same answer nine times out of ten.
+on wool's load-balancing subsystem, graded by three passes, 91.4% of verdicts
+were unanimous, so the third pass re-derived the same answer nine times out of
+ten. On the 813-claim set, two passes agreed on 98.2%.
 
 The bundle deliberately carries **both prior verdicts and their reasoning**, and
 the tie-break prompt asks the agent to adjudicate rather than start cold. That is
