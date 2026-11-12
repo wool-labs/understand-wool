@@ -202,6 +202,12 @@ def main() -> int:
                 missing += 1
                 no_caller_node += 1
                 missing_rows.append((caller_qual, name, rel, node.lineno))
+                # Listed under `--symbol` too. A caller the graph has no node
+                # for is the failure this audit exists to expose, and leaving
+                # it out made the per-symbol report say "none found in the AST"
+                # about a call site it had just counted as missing.
+                if args.symbol and name == args.symbol:
+                    symbol_rows.append((f"{rel}:{caller_qual}", name, node.lineno, False))
                 continue
             if depth_climbed:
                 closure_calls += 1
