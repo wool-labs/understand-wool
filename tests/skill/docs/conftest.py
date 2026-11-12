@@ -64,6 +64,11 @@ def build_tiebreak_bundle() -> Any:
 
 
 @pytest.fixture(scope="session")
+def harvest_docs() -> Any:
+    return load_script("harvest_docs")
+
+
+@pytest.fixture(scope="session")
 def strip_docstrings() -> Any:
     return load_script("strip_docstrings")
 
