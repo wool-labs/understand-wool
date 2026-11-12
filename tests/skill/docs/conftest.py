@@ -69,6 +69,11 @@ def version_timeline() -> Any:
 
 
 @pytest.fixture(scope="session")
+def seed_scope_facts() -> Any:
+    return load_script("seed_scope_facts")
+
+
+@pytest.fixture(scope="session")
 def harvest_docs() -> Any:
     return load_script("harvest_docs")
 
