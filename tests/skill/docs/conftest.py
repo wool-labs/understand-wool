@@ -64,6 +64,11 @@ def build_tiebreak_bundle() -> Any:
 
 
 @pytest.fixture(scope="session")
+def version_timeline() -> Any:
+    return load_script("version_timeline")
+
+
+@pytest.fixture(scope="session")
 def harvest_docs() -> Any:
     return load_script("harvest_docs")
 
