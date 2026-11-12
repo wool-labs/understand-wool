@@ -22,6 +22,37 @@ The knowledge graph JSON has this structure:
 - `layers[]` — each has {id, name, description, nodeIds[]}
 - `tour[]` — each has {order, title, description, nodeIds[]}
 
+## Reading Claim Nodes
+
+A `claim` node states something the documentation asserts about the code. The rules in this section apply to claim nodes carrying `emittedBy: "understand-docs"`. A claim node without that field comes from another producer or an older run: its `name` may be a short title, and its grounding status is **not recorded**. Say so; do not report it as checked, unchecked, or inconclusive.
+
+`groundingVerdict` says whether the assertion was checked against the code:
+
+| `groundingVerdict` | meaning |
+|---|---|
+| `supported` | checked; the code does what the claim says |
+| `contradicted` | checked; the code does otherwise |
+| `unverifiable` | checked; no executable code bears on it |
+| `ungrounded` | **never checked** |
+| `mixed` | the claim is stated in several places and their verdicts differ; read `groundingOccurrences` |
+
+- Read `groundingVerdict` for a node's status. Do not infer status from the words `unverified` or `ungrounded` in `tags`: the tag `unverified` marks an `unverifiable` claim, which was examined.
+- Report an `ungrounded` claim as unchecked, never as inconclusive.
+- **To list every claim with a given status, match the node-level field or any entry of `groundingOccurrences`.** A `mixed` node hides its occurrences' verdicts from a node-level query. The `DRIFT` tag is safe to search: it is on every node with at least one `contradicted` occurrence. For example, every claim the code has drifted from:
+
+  ```bash
+  jq '.nodes[] | select(.type=="claim")
+    | select(.groundingVerdict=="contradicted"
+             or any(.groundingOccurrences[]?; .groundingVerdict=="contradicted"))
+    | {id, name, groundingVerdict, groundingOccurrences}' "$UA_DIR/knowledge-graph.json"
+  ```
+
+- When a node has `groundingOccurrences`, each entry's `groundingVerdict`, `groundingAgreement`, and `scopeNote` hold only for that entry's occurrence. `attachedTo` names its symbol; `filePath` and `lineRange` locate its docstring. Answer per occurrence and name the symbol. The node-level `filePath` and `lineRange` belong to the first entry.
+- On any node with `groundingOccurrences`, a missing node-level `groundingAgreement` or `scopeNote` means the value differs per occurrence, not that there is none. Read the entries.
+- `groundingAgreement` qualifies the verdict. `split` means the graders disagreed and no tie-break has run: the verdict shown is a placeholder, and the claim is disputed. `majority` means only one grader returned a verdict: it is uncorroborated. `missing` means a grader was asked and returned nothing. Say which applies.
+- A `scopeNote` gives the narrower form of the claim that the code supports. Quote its `asSupported` text when you cite the claim, and do not report a scoped claim as plainly supported.
+- `name` is the full claim text. Cite a claim by its `id`.
+
 ## How to Read Efficiently
 
 1. Use Grep to search within the JSON for relevant entries BEFORE reading the full file
@@ -64,6 +95,7 @@ The knowledge graph JSON has this structure:
 6. **Read layer context** — Grep for `"layers"` to understand which architectural layers the matched nodes belong to.
 
 7. **Answer the query** using only the relevant subgraph:
+   - For every `claim` node in the subgraph, read the whole node before citing it and apply **Reading Claim Nodes** above. A name match alone does not show the verdict; fetch the node by id: `jq --arg id "<claim id>" '.nodes[] | select(.id==$id)' "$UA_DIR/knowledge-graph.json"`
    - Reference specific files, functions, and relationships from the graph
    - Explain which layer(s) are relevant and why
    - Be concise but thorough — link concepts to actual code locations

@@ -36,6 +36,19 @@ and the dashboard legend.
 Grounding verdicts arrive via `design-claims.json` (produced by `design_lens.py`
 with its own `--grounded` flag), not through a flag here.
 
+**The trust surface.** Two properties hold for every claim node, and a consumer
+may rely on both without reading anything else:
+
+- `groundingVerdict` is always present. A claim no grader examined reads
+  `ungrounded`, which is a different statement from `unverifiable` ("examined,
+  and no executable code bears on it"). A node that merges occurrences whose
+  verdicts differ reads `mixed` and lists each one in `groundingOccurrences`.
+- `name` is the full claim text, never an abbreviation, so two distinct claim
+  nodes never share a name. Shortening for display is the renderer's job.
+
+Both hold on a re-run as well. Feeding a previous output back in as `--graph`
+replaces the claim layer that run wrote rather than appending a second copy.
+
 Usage:
     python3 emit_claim_graph.py --graph knowledge-graph.json \\
         --design-claims design-claims.json --doc-units doc-units.json \\
@@ -74,14 +87,39 @@ VERDICT_TAG = {"supported": "verified",
                "contradicted": "DRIFT",
                "unverifiable": "unverified"}
 
+# Emitter-level statuses. Neither is a grader verdict and neither belongs in the
+# grading taxonomy: a grader never casts them, the emitter derives them.
+#
+# `UNGROUNDED` marks a claim no grader examined. Leaving the field off instead
+# made "never checked" render identically to nothing at all, and a consumer
+# could not tell it from `unverifiable` — opposite statements about how much
+# work has been done.
+#
+# `MIXED` marks a node that merges occurrences of one sentence whose verdicts
+# differ. Each occurrence is graded against its own symbol, so the sentence can
+# hold of one and not of another; reporting any single member's verdict for the
+# node would attribute it to the rest.
+UNGROUNDED = "ungrounded"
+MIXED = "mixed"
+# Kept apart from `VERDICT_TAG`, whose keys are exactly the grader vocabulary
+# and are asserted equal to `reconcile_verdicts.VERDICTS`.
+STATUS_TAG = {UNGROUNDED: "ungrounded", MIXED: "mixed"}
+
+# Stamped on every node this script writes, so a later run can find and replace
+# them. `claim` is a shared NodeType — other producers emit claim nodes too —
+# so the type alone does not say whose a node is.
+EMITTER = "understand-docs"
+PRINCIPLE_PREFIX = "concept:principle:"
+# The shape of an id `reconcile_claims.claim_id` mints: `claim:` plus a SHA-256
+# hex digest. Other producers name claims by slug (`claim:<article>:<slug>`),
+# so the shape identifies this pipeline's claim nodes even on a graph written
+# before the stamp existed.
+PIPELINE_CLAIM_ID = re.compile(r"claim:[0-9a-f]{64}")
+
 
 def slug(text: str, limit: int = 60) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return s[:limit].rstrip("-")
-
-
-def short(text: str, limit: int = 72) -> str:
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def main() -> int:
@@ -97,15 +135,40 @@ def main() -> int:
     args = ap.parse_args()
 
     graph = json.loads(args.graph.read_text())
-    nodes: list[dict[str, Any]] = list(graph["nodes"])
-    edges: list[dict[str, Any]] = list(graph["edges"])
-    node_ids = {n["id"] for n in nodes}
-    by_file: dict[str, str] = {n["filePath"]: n["id"] for n in nodes
-                               if n["type"] == "file" and n.get("filePath")}
-
     units = {u["id"]: u for u in json.loads(args.doc_units.read_text())["docUnits"]}
     claims = {c["claimId"]: c
               for c in json.loads(args.design_claims.read_text())["claims"]}
+
+    # ---- remove what an earlier run of this script wrote ----
+    #
+    # The natural workflow emits twice: once ungrounded, again after grounding,
+    # with the first output as the second run's `--graph`. Appending to it would
+    # leave a stale `ungrounded` node beside the fresh `supported` one under the
+    # same id and name, which is the ambiguity this stage exists to prevent.
+    #
+    # The stamp identifies this script's nodes. The id tests cover a graph
+    # written before the stamp existed: every id this run will mint, every
+    # claim node whose id has the shape only this pipeline mints, and the
+    # principle namespace, which nothing else writes into. Matching the shape
+    # matters because a claim id hashes its text: a reworded docstring leaves
+    # the old node under an id no current claim has, with a truncated name and
+    # no verdict, and nothing else would remove it.
+    stale = {n["id"] for n in graph["nodes"]
+             if n.get("emittedBy") == EMITTER
+             or n["id"] in claims
+             or (n.get("type") == "claim"
+                 and PIPELINE_CLAIM_ID.fullmatch(n["id"]))
+             or n["id"].startswith(PRINCIPLE_PREFIX)}
+    nodes: list[dict[str, Any]] = [n for n in graph["nodes"]
+                                   if n["id"] not in stale]
+    edges: list[dict[str, Any]] = [e for e in graph["edges"]
+                                   if e["source"] not in stale
+                                   and e["target"] not in stale]
+    for layer in graph.get("layers") or []:
+        layer["nodeIds"] = [i for i in layer.get("nodeIds", []) if i not in stale]
+    node_ids = {n["id"] for n in nodes}
+    by_file: dict[str, str] = {n["filePath"]: n["id"] for n in nodes
+                               if n["type"] == "file" and n.get("filePath")}
 
     def resolve(unit: dict) -> tuple[str | None, str]:
         """Best existing node for a doc unit: exact -> class -> file."""
@@ -125,8 +188,8 @@ def main() -> int:
     # docstrings is two claims. That is correct for validation — each occurrence
     # is separately true or false of its own symbol — and wrong here, where it
     # renders "Eviction is WorkerProxy's responsibility" three times as three
-    # nodes. Occurrences are merged into one node that records every place the
-    # sentence appears.
+    # nodes. Occurrences are merged into one node, and `groundingOccurrences`
+    # on that node keeps each occurrence's own verdict so the merge loses none.
     def canon_text(text: str) -> str:
         return re.sub(r"\s+", " ", text).strip().rstrip(".").casefold()
 
@@ -147,6 +210,11 @@ def main() -> int:
     # An unmapped verdict silently ships its raw string as a tag. Count them so
     # the next taxonomy change fails loudly rather than leaking.
     unmapped_verdicts: collections.Counter = collections.Counter()
+    verdict_stats: collections.Counter = collections.Counter()
+    # Per occurrence, before merging. This is the coverage measure: a `mixed`
+    # node hides how many of its occurrences were graded, and an ungrounded
+    # occurrence inside one is in no node-level count.
+    occurrence_stats: collections.Counter = collections.Counter()
     emitted_claims = 0
     for cid, claim in sorted(claims.items()):
         unit = units.get(claim["docUnitId"])
@@ -155,20 +223,70 @@ def main() -> int:
         if canonical.get(cid) != cid:
             continue
         target, how = resolve(unit)
-        grounding = claim.get("grounding") or {}
-        verdict = grounding.get("verdict")
-        note = grounding.get("scopeNote")
+        # Every occurrence of this sentence, canonical first, each with the
+        # verdict its own symbol earned and the docstring it was read from.
+        members = sorted(text_group[canon_text(claim["claimText"])],
+                         key=lambda m: (m != cid, m))
+        occurrences = []
+        # target node -> [(linkage, verdict)], one entry per occurrence on it
+        linked: dict[str, list[tuple[str, str]]] = {}
+        for member in members:
+            g = claims[member].get("grounding") or {}
+            member_unit = units[claims[member]["docUnitId"]]
+            member_verdict = g.get("verdict") or UNGROUNDED
+            member_target, member_how = resolve(member_unit)
+            if member_target:
+                linked.setdefault(member_target, []).append(
+                    (member_how, member_verdict))
+            occurrence_stats[member_verdict] += 1
+            occurrences.append({
+                "claimId": member,
+                "attachedTo": member_unit["attachedTo"],
+                "filePath": member_unit["sourceFile"],
+                **({"lineRange": member_unit["docLineRange"]}
+                   if member_unit.get("docLineRange") else {}),
+                "groundingVerdict": member_verdict,
+                **({"groundingAgreement": g["agreement"]}
+                   if g.get("agreement") else {}),
+                **({"scopeNote": g["scopeNote"]} if g.get("scopeNote") else {}),
+            })
+        cast = {o["groundingVerdict"] for o in occurrences}
+        split = len(cast) > 1
+        verdict = MIXED if split else occurrences[0]["groundingVerdict"]
+
+        # A qualifier belongs to one occurrence's grading. The node states it
+        # only when every occurrence carries the same value; otherwise it is
+        # read per occurrence, so one symbol's bound or agreement is never
+        # reported for another.
+        def shared(key: str) -> Any:
+            first = occurrences[0].get(key)
+            if split or any(o.get(key) != first for o in occurrences):
+                return None
+            return first
+
+        agreement = shared("groundingAgreement")
+        note = shared("scopeNote")
+        drift = "contradicted" in cast
         tags = sorted(set(claim["roles"]))
         tags.append(claim["subsystem"])
-        if verdict:
-            if verdict not in VERDICT_TAG:
-                unmapped_verdicts[verdict] += 1
-            tags.append(VERDICT_TAG.get(verdict, verdict))
+        for v in sorted(cast - STATUS_TAG.keys()):
+            if v not in VERDICT_TAG:
+                unmapped_verdicts[v] += 1
+        tags.append(STATUS_TAG.get(verdict) or VERDICT_TAG.get(verdict, verdict))
+        if split and drift:
+            # A contradicted occurrence is a finding wherever it hides.
+            tags.append(VERDICT_TAG["contradicted"])
+        verdict_stats[verdict] += 1
 
         nodes.append({
             "id": cid,
             "type": "claim",
-            "name": short(claim["claimText"]),
+            # The full text, not an abbreviation. `name` is what a consumer
+            # queries by, so truncating it made distinct claims that share a
+            # long prefix indistinguishable. Distinct nodes cannot collide
+            # here: the collapse above already merged every pair of claims
+            # whose text agrees.
+            "name": claim["claimText"],
             "filePath": unit["sourceFile"],
             "lineRange": unit.get("docLineRange"),
             "summary": claim["claimText"],
@@ -176,9 +294,9 @@ def main() -> int:
             # `complexity` is a CLOSED enum (simple|moderate|complex) in core's
             # schema. Treat it as the binary "is this a finding" channel it
             # already is in practice: only `contradicted` is a defect a
-            # maintainer must act on. A scoped claim is true and stays at its
-            # ordinary level.
-            "complexity": ("complex" if verdict == "contradicted"
+            # maintainer must act on, including when it is one occurrence of a
+            # split node. A scoped claim is true and stays at its ordinary level.
+            "complexity": ("complex" if drift
                            else "moderate" if claim["passCount"] >= 4
                            else "simple"),
             # First-class fields rather than more overloading of `complexity`.
@@ -186,14 +304,17 @@ def main() -> int:
             # and save with zero TypeScript changes. (`GraphEdgeSchema` is not
             # passthrough — which is why verdict qualifiers must live on the
             # node, not the edge.)
-            **({"groundingVerdict": verdict} if verdict else {}),
-            **({"groundingAgreement": grounding.get("agreement")}
-               if grounding.get("agreement") else {}),
+            # Always present: see `UNGROUNDED` and `MIXED` above.
+            "groundingVerdict": verdict,
+            **({"groundingOccurrences": occurrences}
+               if len(occurrences) > 1 else {}),
+            **({"groundingAgreement": agreement} if agreement else {}),
             # Where the claim stops holding, with the citation that proves it.
             # This is the retrievable half of the withdrawn `overstated` verdict
             # — and it was already being computed by design_lens and dropped
             # here, so the graph asserted claims true without their boundaries.
             **({"scopeNote": note} if note else {}),
+            "emittedBy": EMITTER,
             "knowledgeMeta": {
                 "category": claim["roles"][0],
                 "content": claim["claimText"] + (
@@ -210,16 +331,23 @@ def main() -> int:
         emitted_claims += 1
         linkage_stats[how] += 1
 
-        if target:
+        # One `documents` edge per symbol the sentence is stated on, each
+        # described with the verdict earned on THAT symbol. A single edge to
+        # the canonical symbol left every other symbol with no claim attached,
+        # including the one whose occurrence was contradicted.
+        for linked_target, on_target in linked.items():
+            verdicts_here = {v for _, v in on_target}
+            here = MIXED if len(verdicts_here) > 1 else next(iter(verdicts_here))
             edges.append({
                 "source": cid,
-                "target": target,
+                "target": linked_target,
                 "type": "documents",
                 "direction": "forward",
                 "description": (f"documentation claim ({claim['passCount']}/5 "
                                 f"extraction agreement"
-                                + (f", grounded {verdict}" if verdict else "")
-                                + f"; linkage: {how})"),
+                                + (f", {here}" if here in (UNGROUNDED, MIXED)
+                                   else f", grounded {here}")
+                                + f"; linkage: {on_target[0][0]})"),
                 "weight": round(claim["passCount"] / 5, 2),
             })
 
@@ -239,7 +367,7 @@ def main() -> int:
             if len(realized) < 2:
                 dropped_edges["principle with <2 resolvable claims"] += 1
                 continue
-            pid = "concept:principle:" + slug(p["statement"])
+            pid = PRINCIPLE_PREFIX + slug(p["statement"])
             # Two agents can independently find the same principle; merge rather
             # than emit duplicates, keeping the union of evidence.
             if pid in principles:
@@ -288,6 +416,7 @@ def main() -> int:
             "tags": ["design-principle", p["confidence"], *sorted(p["scope"])]
                     + (["has-tension"] if p.get("tension") else []),
             "complexity": "complex" if len(p["realized"]) >= 4 else "moderate",
+            "emittedBy": EMITTER,
             "knowledgeMeta": {
                 "category": "design-principle",
                 "content": p["statement"] + (f"\n\nTrade-off: {p['tension']}"
@@ -387,10 +516,14 @@ def main() -> int:
     graph["nodes"], graph["edges"] = nodes, edges
     args.out.write_text(json.dumps(graph, indent=2, ensure_ascii=False) + "\n")
 
+    if stale:
+        print(f"replaced {len(stale)} node(s) written by an earlier emit")
     print(f"claims emitted:     {emitted_claims} ({assigned} placed in a layer)")
     if unplaced:
         print(f"  WARNING claims with no layer: {dict(unplaced)}")
     print(f"  linkage: {dict(linkage_stats)}")
+    print(f"  grounding: {dict(sorted(verdict_stats.items()))}")
+    print(f"  occurrences: {dict(sorted(occurrence_stats.items()))}")
     print(f"principles emitted: {len(principles)}")
     print(f"design edges:       {design_edges}")
     if unmapped_verdicts:

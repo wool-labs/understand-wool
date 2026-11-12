@@ -41,7 +41,20 @@ Each script is deterministic, stdlib-only, and prints what it did. Nothing here 
 | 13 | **Design edges** — *N agents* | agents | `design-edges-<n>.json` |
 | 14 | **Emit** into the knowledge graph | `emit_claim_graph.py` | merged `knowledge-graph.json` |
 
-Steps 12–14 are the *understanding* half and are independent of 7–11; a graph can be emitted with claims ungrounded, and the verdict tags simply do not appear.
+Steps 12–14 are the *understanding* half and are independent of 7–11; a graph can be emitted with claims ungrounded, and each such claim node then reads `groundingVerdict: "ungrounded"` (see [Reading a claim node](#reading-a-claim-node)).
+
+**To add verdicts to a graph that was emitted ungrounded**, run these in order:
+
+1. Re-run step 12 with the grounded files: `design_lens.py claims-*.json --grounded grounded-*.json --out <dir>`. Verdicts reach the emitter only through the `design-claims.json` this writes; re-running step 14 alone leaves every node `ungrounded`.
+2. Re-run step 14 with the earlier output as `--graph` **and the same `--edges` files as before**. The emitter removes every claim and principle node an earlier run wrote, with their edges, and writes them again; omitting `--edges` therefore deletes the principles and design edges without a warning.
+3. Confirm the emitter printed `replaced N node(s)` and that the `ungrounded` count on the `occurrences:` line dropped.
+
+**After step 14, read the two count lines the emitter prints** and report them with the graph:
+
+- `occurrences:` counts claim occurrences by status before merging. Its `ungrounded` entry is the number of claims no grader checked. This is the coverage figure.
+- `grounding:` counts claim nodes by status after merging. A `mixed` node may be fully graded, and may hold a `contradicted` or an `ungrounded` occurrence, so this line does not measure coverage.
+
+A status absent from either line has a count of zero. A `WARNING unmapped verdicts` line means a stale artifact reached the emitter and the graph is not publishable.
 
 `audit_graph_structure.py` is a separate measuring instrument, not part of the sequence — it reports how much of the real call graph a knowledge graph contains.
 
@@ -77,12 +90,89 @@ Folding it back had a second effect worth knowing: replaying the 813-claim archi
 
 ---
 
+## Reading a claim node
+
+This section is the contract for any agent that reads claim nodes out of the emitted graph. It applies to claim nodes carrying `emittedBy: "understand-docs"`. A `claim` node without that field comes from another producer (the article analyzer names claims `claim:<article>:<slug>` and gives them short titles); none of the guarantees below hold for it, and its grounding status is not recorded.
+
+Three rules cover most reads:
+
+- Key on `id`, and read `groundingVerdict` for a node's status. Do not infer status from the words `unverified` or `ungrounded` in `tags`.
+- **To find every claim with a given status, match the node-level field or any entry of `groundingOccurrences`.** A node whose occurrences disagree reads `mixed` at node level, so a query for `contradicted` on the node-level field alone misses it. The `DRIFT` tag is the one tag that is safe to query: the emitter sets it on every node with at least one `contradicted` occurrence.
+- **To find the claims about a symbol, follow `documents` edges into that symbol.** A merged node has one edge per symbol it is stated on.
+
+### `groundingVerdict`
+
+Every claim node `emit_claim_graph.py` writes carries `groundingVerdict`. On a current run it takes one of five values. Three are the grader verdicts above. Two are statuses the emitter derives, which no grader casts and which therefore do not appear in `prompts/_taxonomy.md`:
+
+| `groundingVerdict` | tag | what it states |
+|---|---|---|
+| `supported` | `verified` | graded; the code does what the claim says |
+| `contradicted` | `DRIFT` | graded; the code does otherwise |
+| `unverifiable` | `unverified` | graded; no executable code bears on the claim |
+| `ungrounded` | `ungrounded` | **not graded** — no grader cast a verdict on this claim |
+| `mixed` | `mixed` (plus `DRIFT` if any occurrence is `contradicted`) | the node merges occurrences whose verdicts differ; read `groundingOccurrences` |
+
+`ungrounded` and `unverifiable` are opposite statements about how much work has been done. Report an `ungrounded` claim as unchecked, never as inconclusive. The tag `unverified` belongs to `unverifiable`: it marks a claim a grader examined.
+
+A sixth value can appear only when a stale artifact reaches the emitter without passing back through `reconcile_verdicts.py`, for example a pre-fold `grounded-*.json` carrying `overstated`. The emitter passes that string through unchanged and prints `WARNING unmapped verdicts`. A graph emitted with that warning is not publishable; re-run step 8 on the stale input, which folds the legacy verdict, and emit again.
+
+### `groundingAgreement`
+
+`groundingAgreement` records how the graders arrived at the verdict. Read it beside the verdict, because three levels change what the verdict means: `majority`, `split`, and `missing`.
+
+| `groundingAgreement` | what it states |
+|---|---|
+| `unanimous` | every grader returned the same verdict |
+| `majority` | more than half of the returned verdicts agree, and not every expected grader agreed. With the two passes this pipeline runs, that means **only one grader returned a verdict**: the verdict is uncorroborated |
+| `adjudicated` | the graders split and the tie-break agent decided |
+| `split` | the graders split and **no tie-break has run**; the verdict shown is a placeholder chosen by a fixed priority, and the claim is disputed |
+| `missing` | a grounding pass covered the claim's bundle and no grader returned a verdict for it; the node reads `ungrounded` |
+
+An `ungrounded` node with no `groundingAgreement` and no `groundingOccurrences` was never sent to a grader at all. On a merged node, read the level per occurrence.
+
+### Merged occurrences
+
+Two claims are the same sentence when their text is equal after collapsing each run of whitespace to one space, stripping all trailing periods, and case-folding. The emitter merges them into one node. Each occurrence is graded separately, usually against a different symbol. The node takes the `id` and the spelling of the occurrence with the lowest claim id, and carries `groundingOccurrences`, one entry per occurrence, canonical first:
+
+```json
+"groundingVerdict": "mixed",
+"groundingOccurrences": [
+  {"claimId": "claim:1a…", "attachedTo": "function:pkg/pool.py:Pool.spawn",
+   "filePath": "pkg/pool.py", "lineRange": [6, 7],
+   "groundingVerdict": "supported", "groundingAgreement": "unanimous",
+   "scopeNote": {"asSupported": "…", "bound": [{"file": "pkg/pool.py", "lines": [8], "role": "limits"}]}},
+  {"claimId": "claim:9f…", "attachedTo": "function:pkg/proxy.py:Proxy.spawn",
+   "filePath": "pkg/proxy.py", "lineRange": [40, 41],
+   "groundingVerdict": "ungrounded"}
+]
+```
+
+Rules for reading a node that has `groundingOccurrences`:
+
+- A verdict, agreement level, or scope note inside an entry holds for that entry's occurrence and for no other. `attachedTo` names its symbol, and `filePath` with `lineRange` locate the docstring it was read from. Two entries can share one `attachedTo`; `claimId` tells them apart.
+- The node-level `filePath` and `lineRange` are the canonical occurrence's. Cite an occurrence's own location when reporting its verdict.
+- The node has one `documents` edge per distinct symbol among its occurrences, and each edge's description states the verdict earned on that symbol.
+- The node-level `groundingVerdict` is the shared verdict when all occurrences agree, and `mixed` when they do not.
+- Node-level `groundingAgreement` and `scopeNote` appear only when every occurrence carries the same value. When either is absent from the node, read it per occurrence. A `mixed` node never carries either.
+- A claim id taken from a `grounded-*.json` or `design-claims.json` file may be a non-canonical occurrence. When no node has that `id`, search `groundingOccurrences[].claimId`.
+
+A node with a single occurrence omits the list, and its node-level fields are that occurrence's.
+
+### `name`
+
+`name` is the full claim text and is unique among the claim nodes this skill emits, so a lookup by `name` returns one claim. On a merged node it is the canonical occurrence's spelling. Prefer lookup by `id` or `groundingOccurrences[].claimId`; to match by text, apply the merge rule above to both sides.
+
+Uniqueness survives re-emission. Running step 14 with a previous output as `--graph` removes every node an earlier run wrote, with its edges, and the emitter prints how many it replaced. It recognizes those nodes by `emittedBy: "understand-docs"`, and, for a graph emitted before that stamp existed, by the id shape only this pipeline mints (`claim:` followed by 64 hex digits). It does not append a second copy.
+
+---
+
 ## Invariants worth not breaking
 
 - **The mirror is the only source agents read.** Pointing them at real source reintroduces circularity silently — the output still looks fine.
 - **Evidence verification runs before consensus**, never after.
 - **Quorum counts distinct pass indices**, never a sum. Summing lets one pass clear quorum alone by emitting two wordings of the same assertion.
 - **Excluded and rejected claims are written out**, never dropped silently.
+- **Every claim node carries `groundingVerdict`, and `name` is never abbreviated.** An absent verdict reads as "inconclusive" to a consumer; a truncated name makes two claims one.
 - **Claim IDs are content hashes** (`docUnitId` + normalized text). Re-deriving them on a changed corpus invalidates any paired before/after comparison.
 
 ## Running the tests
