@@ -389,14 +389,38 @@ def signature_params(node: ast.AST) -> list[str]:
     return [n for n in names if n not in ("self", "cls")]
 
 
+# A nested function or lambda is a separate body: its statements run when *it*
+# is called, not when the function that defines it is.
+NESTED_BODY = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+
+
+def own_nodes(node: ast.AST) -> Iterator[ast.AST]:
+    """Every node inside `node` that belongs to its own body.
+
+    The traversal yields a nested function or lambda and does not enter it.
+    `ast.walk` cannot do this: it enqueues a node's children as it yields the
+    node, so skipping a nested def in the loop body skips that one node and
+    still delivers every `return`, `yield`, and `raise` beneath it. The three
+    checks below were written with exactly that inert guard, and attributed a
+    nested helper's returns, yields, and raises to the function enclosing it.
+    """
+    stack = list(ast.iter_child_nodes(node))
+    while stack:
+        child = stack.pop()
+        yield child
+        if not isinstance(child, NESTED_BODY):
+            stack.extend(ast.iter_child_nodes(child))
+
+
 def direct_raises(node: ast.AST) -> set[str]:
     """Exception *class* names raised syntactically in this body.
 
     `raise some_local_variable` re-raises are excluded — a naive checker counts
-    them as types and inflates the flag count.
+    them as types and inflates the flag count. A raise inside a nested function
+    belongs to that function and is excluded as well.
     """
     found: set[str] = set()
-    for child in ast.walk(node):
+    for child in own_nodes(node):
         if not isinstance(child, ast.Raise) or child.exc is None:
             continue
         exc = child.exc
@@ -427,9 +451,8 @@ def called_names(node: ast.AST) -> set[str]:
 
 
 def returns_value(node: ast.AST) -> bool:
-    for child in ast.walk(node):
-        if isinstance(child, FuncDef) and child is not node:
-            continue
+    """Whether this body itself returns something other than `None`."""
+    for child in own_nodes(node):
         if isinstance(child, ast.Return) and child.value is not None:
             if not (isinstance(child.value, ast.Constant) and child.value.value is None):
                 return True
@@ -437,9 +460,8 @@ def returns_value(node: ast.AST) -> bool:
 
 
 def is_generator(node: ast.AST) -> bool:
-    for child in ast.walk(node):
-        if isinstance(child, FuncDef) and child is not node:
-            continue
+    """Whether this body itself yields, which is what makes it a generator."""
+    for child in own_nodes(node):
         if isinstance(child, (ast.Yield, ast.YieldFrom)):
             return True
     return False
