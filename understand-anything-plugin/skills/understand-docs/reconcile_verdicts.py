@@ -13,7 +13,8 @@ checks them:
 
     - the file resolves to a location inside the mirror, and exists there
     - the cited range is within the file
-    - every non-blank line of the quote appears inside the cited range
+    - every non-blank line of the quote appears within `LINE_SLOP` lines of the
+      cited range, on either side
     - the quote is not a `<docstring removed>` marker or a bare `...` stub
 
 An item failing any of these is `unverified`. A verdict of `supported` or
@@ -130,6 +131,17 @@ AGREEMENT_LEVELS = ("unanimous", "majority", "split", "adjudicated", "missing")
 
 STUB_MARKERS = ("<docstring removed>",)
 
+# How far outside the cited range a quoted line may sit, in lines, on each side.
+#
+# Measured on three archived rounds (the two that graded the 813-claim set and
+# the 71-claim boundary run): of 7,217 citations, 7,216 verify with no tolerance
+# at all, and the one that does not fails at any tolerance. So the tolerance is
+# not what produces the near-zero rejection figures. It is kept, small
+# and symmetric, for the off-by-one an agent makes when it cites a statement and
+# quotes the decorator or `def` line beside it. The window was previously two
+# lines above and three below, by an arithmetic accident no comment described.
+LINE_SLOP = 2
+
 # The reason given to a citation whose path resolves outside the mirror. Named,
 # because `main` counts these apart from ordinary bad citations: a typo costs
 # one citation, while an escape shows the pass read source it must not read.
@@ -195,9 +207,10 @@ def verify_evidence(item: dict, mirror: Path) -> tuple[bool, str]:
     if all(q in {"...", "pass"} for q in quoted):
         return False, "quotes only a stub body"
 
-    # Allow a small slop: agents commonly cite the decorator or `def` line one or
-    # two above the statement they mean. Wider than that is a real miss.
-    lo, hi = max(0, start - 3), min(len(lines), end + 3)
+    # `lines` is 0-indexed and the citation 1-indexed and inclusive, so the
+    # cited range is `lines[start - 1:end]`; the window widens it by `LINE_SLOP`
+    # on each side.
+    lo, hi = max(0, start - 1 - LINE_SLOP), min(len(lines), end + LINE_SLOP)
     window = {norm(l) for l in lines[lo:hi] if norm(l)}
     missing = [q for q in quoted if q not in window]
     if missing:
