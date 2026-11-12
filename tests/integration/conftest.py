@@ -9,7 +9,7 @@ The dimensions below are the ones that genuinely vary a run. They were chosen
 because each independently changes what the final node carries:
 
 - `Verdict` — what the two graders cast, including the withdrawn legacy label
-  the reconciler still folds.
+  the reconciler still folds, and the case where no grader ran at all.
 - `Bound` — whether a verified `role: "limits"` citation exists. Without one a
   narrowing is an unsupported opinion and is dropped.
 - `Narrowing` — whether the grader wrote the `asSupported` half of a scope note.
@@ -75,6 +75,9 @@ class Verdict(Enum):
     CONTRADICTED = auto()
     UNVERIFIABLE = auto()
     LEGACY_OVERSTATED = auto()
+    # No grounding pass covered the claim: steps 7-11 never ran for it, and the
+    # lens and the emitter run on the reconciled claim alone.
+    NOT_GRADED = auto()
 
 
 class Bound(Enum):
@@ -143,16 +146,21 @@ def is_valid(scenario_values) -> bool:
 
     `allpairspy` calls this with a growing prefix of the row, so index defensively.
 
-    Only one constraint is structural rather than merely uninteresting: an
+    Two constraints are structural rather than merely uninteresting. An
     adjudicator cannot *overturn* a claim to `contradicted` when the consensus
     already reads `contradicted` — that is agreement, not an overturn, and the
-    scenario would silently duplicate the AGREES arm.
+    scenario would silently duplicate the AGREES arm. And a claim no grader
+    examined has no disagreement to adjudicate, so a tie-break vote on it
+    cannot exist.
     """
     n = len(scenario_values)
     if n >= 4:
         verdict, adjudication = scenario_values[0], scenario_values[3]
         if (adjudication is Adjudication.OVERTURNS
                 and verdict is Verdict.CONTRADICTED):
+            return False
+        if (verdict is Verdict.NOT_GRADED
+                and adjudication is not Adjudication.NONE):
             return False
     return True
 
@@ -165,6 +173,10 @@ def is_valid(scenario_values) -> bool:
 
 def expected_verdict(s: Scenario) -> str:
     """The verdict the final claim node should carry."""
+    if s.verdict is Verdict.NOT_GRADED:
+        # Stated, not left absent: "never checked" must not read like
+        # `unverifiable`, which says a grader looked and found nothing to run.
+        return "ungrounded"
     if s.adjudication is Adjudication.OVERTURNS:
         return "contradicted"
     if s.verdict is Verdict.LEGACY_OVERSTATED:
@@ -223,6 +235,37 @@ def build_from_scenario(scenario: Scenario, tmp_path: Path, modules):
     (mirror / "pkg").mkdir(parents=True)
     (mirror / SOURCE_FILE).write_text(MIRROR_SOURCE)
 
+    graded = scenario.verdict is not Verdict.NOT_GRADED
+    if graded:
+        _reconcile(scenario, tmp_path, mirror, reconcile)
+
+    claims = make_claims_file(tmp_path / "claims-t.json",
+                              [reconciled_claim(cid=CLAIM_ID)])
+    _run(lens, ["design_lens.py", str(claims),
+                *(["--grounded", str(tmp_path / "grounded" / "grounded-t.json")]
+                  if graded else []),
+                "--out", str(tmp_path / "lens")])
+
+    graph = make_graph(tmp_path / "graph.json")
+    if scenario.linkage is Linkage.SYMBOL:
+        payload = json.loads(graph.read_text())
+        payload["nodes"].append({
+            "id": f"function:{SOURCE_FILE}:{QUALNAME}", "type": "function",
+            "name": QUALNAME, "filePath": SOURCE_FILE, "summary": "spawn",
+            "tags": [], "complexity": "simple"})
+        write_json(graph, payload)
+
+    out = tmp_path / "kg.json"
+    _run(emit, ["emit_claim_graph.py", "--graph", str(graph),
+                "--design-claims", str(tmp_path / "lens" / "design-claims.json"),
+                "--doc-units", str(make_doc_units(tmp_path / "doc-units.json")),
+                "--out", str(out)])
+
+    yield json.loads(out.read_text())
+
+
+def _reconcile(scenario: Scenario, tmp_path: Path, mirror: Path, reconcile):
+    """Write two grading passes for the scenario and reconcile them."""
     wire = VERDICT_WIRE[scenario.verdict]
     make_bundle(tmp_path / "bundles", "b1",
                 [make_claim("c1", "Pool.spawn spawns workers.",
@@ -242,29 +285,6 @@ def build_from_scenario(scenario: Scenario, tmp_path: Path, modules):
         argv += ["--tiebreak", str(tb)]
 
     _run(reconcile, argv)
-
-    claims = make_claims_file(tmp_path / "claims-t.json",
-                              [reconciled_claim(cid=CLAIM_ID)])
-    _run(lens, ["design_lens.py", str(claims),
-                "--grounded", str(tmp_path / "grounded" / "grounded-t.json"),
-                "--out", str(tmp_path / "lens")])
-
-    graph = make_graph(tmp_path / "graph.json")
-    if scenario.linkage is Linkage.SYMBOL:
-        payload = json.loads(graph.read_text())
-        payload["nodes"].append({
-            "id": f"function:{SOURCE_FILE}:{QUALNAME}", "type": "function",
-            "name": QUALNAME, "filePath": SOURCE_FILE, "summary": "spawn",
-            "tags": [], "complexity": "simple"})
-        write_json(graph, payload)
-
-    out = tmp_path / "kg.json"
-    _run(emit, ["emit_claim_graph.py", "--graph", str(graph),
-                "--design-claims", str(tmp_path / "lens" / "design-claims.json"),
-                "--doc-units", str(make_doc_units(tmp_path / "doc-units.json")),
-                "--out", str(out)])
-
-    yield json.loads(out.read_text())
 
 
 def _run(module, argv):

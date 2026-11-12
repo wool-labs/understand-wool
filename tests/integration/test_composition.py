@@ -175,3 +175,31 @@ def test_main_should_link_to_the_containing_file_when_the_symbol_has_no_node(
     # Assert
     assert node is not None
     assert edges, "a claim with only a file node should still draw an edge"
+
+
+def test_main_should_mark_the_claim_ungrounded_when_no_grading_ran(
+    pipeline_modules, tmp_path
+):
+    """Test the mode in which the grounding half of the pipeline never ran.
+
+    Given:
+        A reconciled claim that no grounding pass covered.
+    When:
+        design_lens and emit_claim_graph run without a grounded file.
+    Then:
+        The claim node should read `ungrounded` and be tagged so, never left
+        without a verdict and never tagged as an examined claim.
+    """
+    # Arrange
+    scenario = Scenario(verdict=Verdict.NOT_GRADED, bound=Bound.ABSENT,
+                        narrowing=Narrowing.ABSENT,
+                        adjudication=Adjudication.NONE, linkage=Linkage.SYMBOL)
+
+    # Act
+    with build_from_scenario(scenario, tmp_path, pipeline_modules) as graph:
+        node = claim_node(graph)
+
+    # Assert
+    assert node["groundingVerdict"] == "ungrounded"
+    assert "ungrounded" in node["tags"]
+    assert "unverified" not in node["tags"]

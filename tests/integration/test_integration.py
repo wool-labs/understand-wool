@@ -135,6 +135,8 @@ def scenarios(draw) -> Scenario:
     adjudication = draw(st.sampled_from(list(Adjudication)))
     if verdict is Verdict.CONTRADICTED and adjudication is Adjudication.OVERTURNS:
         adjudication = Adjudication.AGREES
+    if verdict is Verdict.NOT_GRADED:
+        adjudication = Adjudication.NONE
     return Scenario(
         verdict=verdict,
         bound=draw(st.sampled_from(list(Bound))),
