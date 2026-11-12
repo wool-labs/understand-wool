@@ -37,6 +37,7 @@ import json
 import re
 import subprocess
 import sys
+import tokenize
 import unicodedata
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
@@ -506,7 +507,13 @@ def walk_scopes(tree: ast.Module, module_name: str) -> Iterator[Scope]:
 
 def harvest_file(path: Path, root: Path) -> tuple[list[dict[str, Any]], list[Scope], ast.Module]:
     rel = path.relative_to(root).as_posix()
-    source = path.read_text(errors="ignore")
+    # Read as the interpreter decodes it (byte-order mark, PEP 263 coding line),
+    # which is exactly how `strip_docstrings.py` reads. The two must agree on
+    # which files are Python: reading here with `errors="ignore"` harvested doc
+    # units from a file the mirror leaves out, so its claims reached grounding
+    # with no code to be checked against.
+    with tokenize.open(path) as handle:
+        source = handle.read()
     tree = ast.parse(source)
     module_name = rel.replace("/", ".").removesuffix(".py")
 
@@ -807,8 +814,19 @@ def main() -> int:
     for path in paths:
         try:
             units, scopes, tree = harvest_file(path, root)
-        except SyntaxError:
+        except (SyntaxError, ValueError) as exc:
+            # `ValueError` covers bytes that do not decode and source `ast`
+            # refuses outright. Named on stderr every time, not only under
+            # `--explain`: a skipped file contributes no claims, and a silent
+            # skip made a run under the wrong interpreter look complete.
             stats["parse_errors"] += 1
+            where = f":{exc.lineno}" if getattr(exc, "lineno", None) else ""
+            print(f"SKIPPED (unparseable) {path.relative_to(root).as_posix()}"
+                  f"{where} — {exc.__class__.__name__}: "
+                  f"{getattr(exc, 'msg', None) or exc}. No doc unit was "
+                  f"harvested from it. Running Python "
+                  f"{sys.version_info.major}.{sys.version_info.minor}.",
+                  file=sys.stderr)
             continue
         all_units.extend(units)
         all_candidates.extend(check_file(path, root, units, scopes, tree, stats))
