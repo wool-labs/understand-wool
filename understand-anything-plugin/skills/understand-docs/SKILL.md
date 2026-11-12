@@ -12,9 +12,9 @@ Three constraints drive nearly every design decision here, and all three were me
 
 **Extraction is not deterministic, so it is repeated.** Five independent agents extract from the same doc units; claims that fewer than three passes produce are dropped. Canonical-form rules in the extraction prompt moved agreement 41% → 59% on wool with no other change — prompt text is the highest-leverage lever in this pipeline.
 
-**Verification must not be circular.** Claims come *from* docstrings, so an agent verifying one will happily quote the docstring back as proof. `strip_docstrings.py` removes the option: agents read a mirror where every docstring is blanked but **line numbers are preserved**, so cited evidence still maps to the real file.
+**Verification must not be circular.** Claims come *from* docstrings, so an agent verifying one will happily quote the docstring back as proof. `strip_docstrings.py` removes the option: agents read a mirror where every docstring is blanked but **line numbers are preserved**, so cited evidence still maps to the real file. Code that shares a line with a docstring stays in the mirror, and a file that cannot be parsed is left out of the mirror, because a verbatim copy would carry its docstrings.
 
-**Evidence is checked, not trusted.** Every citation names a file, a line range, and a verbatim quote — all three machine-verified against the mirror before any consensus is computed. A consensus over fabricated citations launders a guess into a number. Measured across two rounds: 4,273 citations, 0 rejected.
+**Evidence is checked, not trusted.** Every citation names a file, a line range, and a verbatim quote — all three machine-verified against the mirror before any consensus is computed. The file must resolve to a location inside the mirror: a path that leaves it through `..`, a symlink, or an absolute path is rejected with the reason `citation escapes the mirror`, since the file it reaches still has its docstrings. Such a citation is more than a bad citation: it shows the pass read source outside the mirror, so step 8 prints a `WARNING … citation(s) escape the mirror` line naming the pass. A consensus over fabricated citations launders a guess into a number. Measured across two rounds: 4,273 citations, 0 rejected.
 
 ---
 
@@ -40,6 +40,29 @@ Each script is deterministic, stdlib-only, and prints what it did. Nothing here 
 | 12 | **Design lens** — roles + blocking | `design_lens.py` | `design-claims.json`, `design-blocks.json` |
 | 13 | **Design edges** — *N agents* | agents | `design-edges-<n>.json` |
 | 14 | **Emit** into the knowledge graph | `emit_claim_graph.py` | merged `knowledge-graph.json` |
+
+**Step 3 gates step 4.** Run it as:
+
+```bash
+python3 strip_docstrings.py <src-root> <dest-root> --verify
+```
+
+Proceed to step 4 in exactly two cases:
+
+1. The script exits 0 and prints `verify: line counts preserved, 0 docstrings leaked, N symbols kept in place`.
+2. The script exits 1, `verify FAILED: UNPARSEABLE` is the only `verify FAILED:` heading on stderr, and every file named in the `UNPARSEABLE — N file(s) left out of the mirror` list printed above that heading is one the table below tells you to leave out.
+
+In every other case, stop. Steps 1 and 3 read files the same way, so a file step 3 leaves out is one step 1 skipped: step 1 prints a `SKIPPED (unparseable)` line on stderr for each, and no claim is extracted from it. A claim made elsewhere about code in a left-out file has nothing to be checked against and grades `unverifiable`. The script exits 1 before mirroring anything, with a `NO SOURCE` line, when `<src-root>` does not exist or holds no `.py` file; correct the path and run it again.
+
+`--verify` runs five checks on the finished mirror and prints every failure, each under its own heading, before it exits:
+
+| stderr heading | what it means | what to do |
+|---|---|---|
+| `UNPARSEABLE` | A source file could not be decoded or parsed as Python. It was left out of the mirror, and each such file is named in the list above the heading with its error. | Decide per file by compiling it under the Python the corpus targets (its `requires-python`, or the newest interpreter installed): `pythonX.Y -m py_compile <file>`. **If it compiles**, the interpreter running the pipeline is wrong for the corpus: re-run the pipeline **from step 1** under that Python. Re-running step 3 alone clears this failure and leaves the file's claims missing, because step 1 skipped the same file. **If it does not compile**, the file is broken, by intent (a syntax-error fixture) or by mistake: leave it out, continue to step 4, and name each such file to the user when you report the run. **If no such interpreter is available to test with**, stop and ask the user. |
+| `LINE COUNT MISMATCH` | A mirrored file has a different number of lines than its source, so every citation into it would point at the wrong line. | Stop. This is a defect in `strip_docstrings.py`; do not ground against this mirror. |
+| `MIRROR DOES NOT PARSE` | Stripping turned a valid source file into invalid Python. | Stop, as above. |
+| `LEAK` | A docstring other than the `<docstring removed>` marker is still in the mirror, at the file and line listed. | Stop, as above. |
+| `SYMBOL LOST` | A class or function in the source is absent from the mirror at its line. A grader looking for it would find nothing and answer `unverifiable`. | Stop, as above. |
 
 Steps 12–14 are the *understanding* half and are independent of 7–11; a graph can be emitted with claims ungrounded, and each such claim node then reads `groundingVerdict: "ungrounded"` (see [Reading a claim node](#reading-a-claim-node)).
 
@@ -168,7 +191,8 @@ Uniqueness survives re-emission. Running step 14 with a previous output as `--gr
 
 ## Invariants worth not breaking
 
-- **The mirror is the only source agents read.** Pointing them at real source reintroduces circularity silently — the output still looks fine.
+- **The mirror is the only source agents read, and the only place a citation may point.** Pointing agents at real source reintroduces circularity silently — the output still looks fine. `reconcile_verdicts.py` enforces the citation half by rejecting any path that resolves outside `--mirror`. **If step 8 or step 11 prints `WARNING … citation(s) escape the mirror`, discard each pass it names and re-run that pass** before using the result. A pass named `tiebreak` is the adjudication: re-run step 10, then step 11. Any other name is the stem of a step-7 pass file: re-run that agent on its bundle, then re-run step 8 and, if a tie-break follows, steps 9–11. The same warning is at the top of `grounding-report-<label>.md`, the count and pass names are in `stats.escapedCitations` of `grounded-<label>.json` (the key is absent when there are none), and each rejected citation is in `evidenceFailures[].failure`. A pass that read real source may have leaned on it for verdicts whose citations verify, which is why the whole pass is discarded. The warning detects only a citation whose path leaves the mirror; its absence does not show that no pass read real source.
+- **A file enters the mirror stripped or not at all.** `strip_docstrings.py` never copies a file it could not parse.
 - **Evidence verification runs before consensus**, never after.
 - **Quorum counts distinct pass indices**, never a sum. Summing lets one pass clear quorum alone by emitting two wordings of the same assertion.
 - **Excluded and rejected claims are written out**, never dropped silently.

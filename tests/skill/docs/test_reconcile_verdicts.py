@@ -225,6 +225,169 @@ def test_verify_evidence_should_reject_when_input_malformed(
     assert not ok
 
 
+REAL_DOCSTRING = '"""The pool spawns exactly N workers."""'
+
+
+def make_real_source(tmp_path: Path) -> Path:
+    """An unstripped file beside the mirror, docstring intact at line 1."""
+    real = tmp_path / "real" / "pkg"
+    real.mkdir(parents=True)
+    (real / "pool.py").write_text(REAL_DOCSTRING + "\n" + MIRROR_SOURCE)
+    return real / "pool.py"
+
+
+@pytest.mark.parametrize(
+    "cited",
+    ["src-stripped/../real/pkg/pool.py", "../real/pkg/pool.py",
+     "pkg/../../real/pkg/pool.py"],
+    ids=["prefixed", "bare", "from-inside"],
+)
+def test_verify_evidence_should_reject_when_the_path_climbs_out_of_the_mirror(
+    reconcile_verdicts, mirror, tmp_path, cited
+):
+    """Test confinement of a citation to the mirror.
+
+    Given:
+        An unstripped source file beside the mirror and a citation whose path
+        reaches it through `..`, quoting its docstring verbatim.
+    When:
+        verify_evidence checks the citation.
+    Then:
+        It should reject it, and say the citation escapes the mirror.
+    """
+    # Arrange
+    make_real_source(tmp_path)
+    item = evidence([1, 1], REAL_DOCSTRING, file=cited)
+
+    # Act
+    ok, reason = reconcile_verdicts.verify_evidence(item, mirror)
+
+    # Assert
+    assert not ok
+    assert reason.startswith("citation escapes the mirror")
+
+
+def test_verify_evidence_should_reject_when_a_symlink_leads_out_of_the_mirror(
+    reconcile_verdicts, mirror, tmp_path
+):
+    """Test confinement against a link rather than a spelling.
+
+    Given:
+        A symlink inside the mirror that points at an unstripped source file.
+    When:
+        verify_evidence checks a citation of the link quoting the docstring.
+    Then:
+        It should reject it, and say the citation escapes the mirror.
+    """
+    # Arrange
+    real = make_real_source(tmp_path)
+    (mirror / "pkg" / "linked.py").symlink_to(real)
+    item = evidence([1, 1], REAL_DOCSTRING, file="pkg/linked.py")
+
+    # Act
+    ok, reason = reconcile_verdicts.verify_evidence(item, mirror)
+
+    # Assert
+    assert not ok
+    assert reason.startswith("citation escapes the mirror")
+
+
+def test_verify_evidence_should_report_an_escape_when_an_absolute_path_is_outside(
+    reconcile_verdicts, mirror, tmp_path
+):
+    """Test that an absolute path to real source is not reported as a typo.
+
+    Given:
+        A citation giving the absolute path of an unstripped file outside the
+        mirror and quoting its docstring.
+    When:
+        verify_evidence checks the citation.
+    Then:
+        It should reject it, and say the citation escapes the mirror.
+    """
+    # Arrange
+    real = make_real_source(tmp_path)
+    item = evidence([1, 1], REAL_DOCSTRING, file=str(real))
+
+    # Act
+    ok, reason = reconcile_verdicts.verify_evidence(item, mirror)
+
+    # Assert
+    assert not ok
+    assert reason.startswith("citation escapes the mirror")
+
+
+@pytest.mark.parametrize("spelling", ["absolute", "leading-slash"])
+def test_verify_evidence_should_accept_when_a_rooted_path_names_a_mirror_file(
+    reconcile_verdicts, mirror, spelling
+):
+    """Test the two rooted spellings that still name a mirror file.
+
+    Given:
+        A citation whose path is the mirror file's absolute path, or its
+        mirror-relative path with a leading slash.
+    When:
+        verify_evidence checks the citation.
+    Then:
+        It should return ok=True.
+    """
+    # Arrange
+    cited = (str(mirror / "pkg" / "pool.py") if spelling == "absolute"
+             else "/pkg/pool.py")
+    item = evidence(GOOD_LINES, GOOD_CODE, file=cited)
+
+    # Act
+    ok, reason = reconcile_verdicts.verify_evidence(item, mirror)
+
+    # Assert
+    assert (ok, reason) == (True, "ok")
+
+
+def test_verify_evidence_should_accept_when_a_dotted_path_stays_inside_the_mirror(
+    reconcile_verdicts, mirror
+):
+    """Test that confinement judges the location and not the spelling.
+
+    Given:
+        A citation whose path contains `..` and still resolves to a mirror file.
+    When:
+        verify_evidence checks the citation.
+    Then:
+        It should return ok=True.
+    """
+    # Arrange
+    item = evidence(GOOD_LINES, GOOD_CODE, file="pkg/../pkg/pool.py")
+
+    # Act
+    ok, reason = reconcile_verdicts.verify_evidence(item, mirror)
+
+    # Assert
+    assert (ok, reason) == (True, "ok")
+
+
+def test_verify_evidence_should_reject_when_the_path_names_a_directory(
+    reconcile_verdicts, mirror
+):
+    """Test a citation that names something other than a file.
+
+    Given:
+        A citation whose path is a directory of the mirror.
+    When:
+        verify_evidence checks the citation.
+    Then:
+        It should reject it as no such file, without raising.
+    """
+    # Arrange
+    item = evidence(GOOD_LINES, GOOD_CODE, file="pkg")
+
+    # Act
+    ok, reason = reconcile_verdicts.verify_evidence(item, mirror)
+
+    # Assert
+    assert not ok
+    assert reason.startswith("no such file")
+
+
 @settings(max_examples=50)
 @given(data=st.data())
 def test_verify_evidence_should_accept_any_verbatim_span(
@@ -517,6 +680,77 @@ def test_main_should_downgrade_to_unverifiable_when_evidence_fails(
     (claim,) = artifact["claims"]
     assert claim["verdict"] == "unverifiable"
     assert artifact["stats"]["downgraded"] == 2
+
+
+def test_main_should_downgrade_and_name_the_escape_when_a_citation_leaves_the_mirror(
+    reconcile_verdicts, mirror, tmp_path, monkeypatch, capsys
+):
+    """Test that a docstring quoted from the real source verifies nothing.
+
+    Given:
+        Two passes voting `supported` whose only citation reaches an unstripped
+        file through `..` and quotes the docstring the claim came from.
+    When:
+        main() reconciles the corpus.
+    Then:
+        It should downgrade the claim to `unverifiable`, count both citations
+        as rejected, record the escape as the reason on each, and name both
+        passes in a warning on stdout, in the report, and in the stats.
+    """
+    # Arrange
+    make_real_source(tmp_path)
+    entry = verdict_entry("c1", "supported", [evidence(
+        [1, 1], REAL_DOCSTRING, file="src-stripped/../real/pkg/pool.py")])
+    files = two_pass_corpus(tmp_path, entry, entry)
+
+    # Act
+    artifact, report = run_main(
+        reconcile_verdicts, tmp_path, monkeypatch, mirror, files)
+
+    # Assert
+    (claim,) = artifact["claims"]
+    assert claim["verdict"] == "unverifiable"
+    assert artifact["stats"]["evidenceChecks"] == {"evidence BAD": 2}
+    assert artifact["stats"]["escapedCitations"] == {
+        "count": 2, "passes": ["b1-pass1", "b1-pass2"]}
+    assert "WARNING — 2 citation(s) escape the mirror" in report
+    failures = re.findall(r'"failure": "([^"]*)"', json.dumps(artifact))
+    assert failures and all(
+        f.startswith("citation escapes the mirror") for f in failures)
+    out = capsys.readouterr().out
+    assert "WARNING 2 citation(s) escape the mirror" in out
+    assert "b1-pass1, b1-pass2" in out
+
+
+def test_main_should_print_no_escape_warning_when_citations_stay_inside(
+    reconcile_verdicts, mirror, tmp_path, monkeypatch, capsys
+):
+    """Test that the escape warning is reserved for escapes.
+
+    Given:
+        Two passes, one with a verified citation and one whose citation quotes
+        code absent from the mirror file.
+    When:
+        main() reconciles the corpus.
+    Then:
+        It should count one rejected citation and carry no escape warning
+        on stdout, in the report, or in the stats.
+    """
+    # Arrange
+    good = verdict_entry("c1", "supported", [evidence(GOOD_LINES, GOOD_CODE)])
+    bad = verdict_entry(
+        "c1", "supported", [evidence(GOOD_LINES, "return worker.halt()")])
+    files = two_pass_corpus(tmp_path, good, bad)
+
+    # Act
+    artifact, report = run_main(
+        reconcile_verdicts, tmp_path, monkeypatch, mirror, files)
+
+    # Assert
+    assert artifact["stats"]["evidenceChecks"]["evidence BAD"] == 1
+    assert "escapedCitations" not in artifact["stats"]
+    assert "escape the mirror" not in report
+    assert "escape the mirror" not in capsys.readouterr().out
 
 
 def test_main_should_accept_a_current_taxonomy_scope_note(

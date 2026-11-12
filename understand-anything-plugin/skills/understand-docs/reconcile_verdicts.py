@@ -11,7 +11,7 @@ into a number.
 a line range, and a verbatim quote. All three are checkable, and this script
 checks them:
 
-    - the file exists in the mirror
+    - the file resolves to a location inside the mirror, and exists there
     - the cited range is within the file
     - every non-blank line of the quote appears inside the cited range
     - the quote is not a `<docstring removed>` marker or a bare `...` stub
@@ -130,6 +130,11 @@ AGREEMENT_LEVELS = ("unanimous", "majority", "split", "adjudicated", "missing")
 
 STUB_MARKERS = ("<docstring removed>",)
 
+# The reason given to a citation whose path resolves outside the mirror. Named,
+# because `main` counts these apart from ordinary bad citations: a typo costs
+# one citation, while an escape shows the pass read source it must not read.
+ESCAPE = "citation escapes the mirror"
+
 
 def norm(line: str) -> str:
     return re.sub(r"\s+", " ", line).strip()
@@ -141,8 +146,28 @@ def verify_evidence(item: dict, mirror: Path) -> tuple[bool, str]:
     if not raw_file:
         return False, "no file"
     rel = raw_file.split("src-stripped/")[-1].lstrip("/")
-    path = mirror / rel
-    if not path.exists():
+    # Confine the citation to the mirror. `rel` is agent-written, and a `..`
+    # segment or a symlink walks out of the mirror to the real source, where the
+    # quote that "verifies" is the docstring the claim was extracted from. The
+    # marker check below cannot catch that: it matches the mirror's placeholder,
+    # never real prose. Resolving both sides first makes the containment test
+    # about where the file is, not how the path is spelled.
+    root = mirror.resolve()
+    path = (root / rel).resolve()
+    if raw_file.startswith("/"):
+        # An absolute path is taken at its word when it lands inside the
+        # mirror. Otherwise the leading slash is read as noise and the path is
+        # tried under the mirror root, which is how such citations were always
+        # read; only when neither names a mirror file is it an escape, so an
+        # absolute path into the real source is not reported as a typo.
+        absolute = Path(raw_file).resolve()
+        if absolute.is_relative_to(root):
+            path = absolute
+        elif not path.is_file():
+            return False, f"{ESCAPE}: {raw_file}"
+    if not path.is_relative_to(root):
+        return False, f"{ESCAPE}: {rel}"
+    if not path.is_file():
         return False, f"no such file: {rel}"
 
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -494,6 +519,14 @@ def main() -> int:
             ).items())
         },
     }
+    # Citations that left the mirror, and the passes that made them. Recorded
+    # only when there are any, so the artifact of a clean run is unchanged; a
+    # consumer that never sees stdout still finds the escape here.
+    escaped = [f for f in ev_failures if f["failure"].startswith(ESCAPE)]
+    escaped_passes = sorted({str(f["pass"]) for f in escaped})
+    if escaped:
+        stats["escapedCitations"] = {"count": len(escaped),
+                                     "passes": escaped_passes}
 
     (args.out / f"grounded-{args.label}.json").write_text(json.dumps({
         "schemaVersion": SCHEMA_VERSION, "stats": stats,
@@ -548,6 +581,14 @@ def main() -> int:
         "| verdict | n | share |",
         "|---|---:|---:|",
     ]
+    if escaped:
+        report[2:2] = [
+            f"**WARNING — {len(escaped)} citation(s) escape the mirror**, from "
+            f"pass(es) {', '.join(f'`{p}`' for p in escaped_passes)}. A pass "
+            f"that cites outside the mirror read source it must not read. "
+            f"Discard each named pass, re-run it, and reconcile again before "
+            f"using these verdicts.\n",
+        ]
     for k in VERDICTS:
         n = final.get(k, 0)
         report.append(f"| {k} | {n} | {n / total:.1%} |" if total else f"| {k} | {n} | — |")
@@ -580,6 +621,15 @@ def main() -> int:
     print(f"{args.label}: {total} claims, {n_passes} passes")
     print(f"  evidence: {ev_stats['evidence ok']} verified, {ev_stats['evidence BAD']} rejected "
           f"({stats['evidenceFailureRate']:.1%} bad), {len(downgrades)} verdicts downgraded")
+    if escaped:
+        # Loud and separate from the rejected count. The citation itself was
+        # already discarded; what this reports is that a pass read outside the
+        # mirror, which puts its other verdicts in doubt as well.
+        print(f"  WARNING {len(escaped)} citation(s) escape the mirror, from "
+              f"pass(es): {', '.join(escaped_passes)}. "
+              f"A pass that cites outside the mirror read source it must not "
+              f"read; discard that pass and re-run it. Listed under "
+              f"`evidenceFailures` in grounded-{args.label}.json.")
     print("  verdicts:  " + "  ".join(f"{k} {final.get(k, 0)}" for k in VERDICTS))
     if folded:
         print(f"  folded {len(folded)} legacy `overstated` votes: " + ", ".join(
