@@ -210,8 +210,6 @@ def main() -> int:
     ap.add_argument("verdicts", nargs="+", type=Path)
     ap.add_argument("--bundles", type=Path, required=True)
     ap.add_argument("--mirror", type=Path, required=True)
-    ap.add_argument("--claims", type=Path, default=None,
-                    help="reconciled claims file, for claim text in the report")
     ap.add_argument("--out", type=Path, default=Path("."))
     ap.add_argument("--label", default="claims")
     ap.add_argument("--tiebreak", type=Path, default=None,
