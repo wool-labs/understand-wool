@@ -41,6 +41,29 @@ Each script is deterministic, stdlib-only, and prints what it did. Nothing here 
 | 13 | **Design edges** — *N agents* | agents | `design-edges-<n>.json` |
 | 14 | **Emit** into the knowledge graph | `emit_claim_graph.py` | merged `knowledge-graph.json` |
 
+**Step 2b is a measurement, and no later step reads its result.** It reports whether the dates of doc units are spread widely enough that recency could tell which of two contradicting doc units is newer. Step 13 is unaffected by the result: a contradiction between two claims is one `contradicts` edge for the pair, in either order, whatever step 2b reports. Do not order the pair by recency, and never write a `supersedes` edge: step 14 drops any edge type it does not know, so the contradiction would vanish from the graph. The step is optional; run it when the user wants the measurement, report the verdict to them, and continue the pipeline. Nothing in this step calls for a change to the user's repository: do not commit, stage, stash, fetch, tag, or unshallow on its account.
+
+Run it as `python3 version_timeline.py <repo-root> --doc-units <doc-units.json> --report`, where `<repo-root>` is the directory step 1 was given and the checkout is the commit step 1 harvested. It prints a `VERDICT:` line on stderr and writes the verdict to `stats.verdict` in `version-timeline.json`, with the reason, when there is one, in `stats.verdictReason`. The script exits 0 on every verdict, so read the line. A non-zero exit with a traceback and no `VERDICT:` line means an argument is wrong: `<repo-root>` is not inside a git repository, or the doc-units path is missing or not JSON. Correct the argument and run again.
+
+| verdict | what it means |
+|---|---|
+| `viable` | The doc units that resolved to a release series fall in three or more series, and no series holds more than 90% of them. |
+| `marginal` | They fall in fewer than three series, and no series holds more than 90% of them. |
+| `not viable` | One series holds more than 90% of the resolved doc units. This is tested before `marginal`, so a corpus entirely in one series is `not viable`. The cause is a bulk reformat that flattened `git blame`, or a project that has had one minor series; the script cannot tell which. |
+| `undetermined` | The spread could not be measured. The line carries a reason in parentheses, listed below. |
+
+An `undetermined` verdict names one of five reasons, tested in this order. In every row, "report" means tell the user the verdict and reason, then continue the pipeline; it never means halting the run.
+
+| reason | what it means | what to do |
+|---|---|---|
+| `shallow clone` | `git rev-parse --is-shallow-repository` prints `true`, so history and tags are truncated. | Report that step 2b was not measured. Do not unshallow the clone without asking. Running on a different, full clone is valid only if it is at the same commit and step 1 is re-run there to produce the doc-units file; line numbers from another commit date the wrong lines without any warning. |
+| `no doc units` | The doc-units file lists no doc units (`"docUnits": []`). | If step 1 has not run, run it. If it ran and found none, report that. |
+| `no version tags` | The clone has no tag of the form `1.2.3` or `v1.2.3`. Tags of any other form are ignored. | Run `git ls-remote --tags origin`. If it lists version tags, the clone is missing them: ask the user before fetching. Otherwise report that the project has no version tags. |
+| `blame failed` | More than half of the doc units resolved to no series, and for more than half of those `git blame` found no committed line. | Either `<repo-root>` is not the directory step 1 was given, or the files have uncommitted changes. Check the first with `git -C <repo-root> ls-files --error-unmatch <sourceFile>` on one `sourceFile` from the doc-units file; if it fails, run once more with the right root. Otherwise report it. |
+| `unreleased` | More than half of the doc units resolved to no series, and `git blame` failed for no more than half of those: the rest were written after the last version tag. | Report it. This is a fact about the repository and a re-run cannot change it. |
+
+Three counts in the output are easy to confuse. `stats.unresolved` is every doc unit with no series. `stats.unresolvedBy` splits it into `noBlame` and `afterLastTag`, and the report's first line prints the same split. `stats.unknown`, printed as `unknown (no blame)`, equals `noBlame`. The `(none)` row of the histogram, of `byMinorSeries`, and of `byRelease` each equals `stats.unresolved`.
+
 **Step 3 gates step 4.** Run it as:
 
 ```bash
