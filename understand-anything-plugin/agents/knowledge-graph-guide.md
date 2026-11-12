@@ -55,6 +55,34 @@ Both graph types share the same top-level shape:
 | `flow` | `flow:<kebab-case-name>` | Business flow/process (domain graph only) |
 | `step` | `step:<flow-name>:<step-name>` | Business step (domain graph only) |
 
+### Documentation Claim Nodes
+
+A graph that has been through the `understand-docs` pipeline also carries `claim` nodes with ids of the form `claim:<64 hex digits>` and the field `emittedBy: "understand-docs"`. Each is a statement the documentation makes about the code, with a `documents` edge to every symbol it is stated on. The rules below apply to those nodes only. A claim node without `emittedBy` comes from another producer or an older run; its grounding status is not recorded, and its `name` may be a short title.
+
+Each carries `groundingVerdict`. Read that field for a node's status, and do not infer status from the words `unverified` or `ungrounded` in `tags`:
+
+- `supported`, `contradicted`, `unverifiable` — a grader checked the claim against the code. `unverifiable` (tag `unverified`) means it was examined and no executable code bears on it.
+- `ungrounded` — **never checked**. Report it as unchecked, never as inconclusive.
+- `mixed` — the claim is stated in several places and their verdicts differ. Read `groundingOccurrences`.
+
+Rules that must not be got wrong:
+
+- **To list every claim with a given status, match the node-level field or any entry of `groundingOccurrences`.** A `mixed` node hides its occurrences' verdicts from a node-level query. The `DRIFT` tag is safe to search: it is on every node with at least one `contradicted` occurrence.
+- Each entry of `groundingOccurrences` carries its own `groundingVerdict`, `groundingAgreement`, and `scopeNote`, which hold only for that occurrence; `attachedTo` names its symbol, and `filePath` with `lineRange` locate its docstring. The node-level `filePath` and `lineRange` belong to the first entry.
+- On any node with `groundingOccurrences`, a missing node-level `groundingAgreement` or `scopeNote` means the value differs per occurrence, not that there is none.
+- `groundingAgreement` qualifies the verdict. `split` means the graders disagreed and no tie-break has run: the verdict shown is a placeholder, and the claim is disputed. `majority` means only one grader returned a verdict: it is uncorroborated. `missing` means a grader was asked and returned nothing. `adjudicated` means a tie-break decided it.
+- A `scopeNote` gives the narrower form of the claim that the code supports, in `asSupported`. Do not report a scoped claim as plainly supported.
+- `name` is the full claim text; refer to a claim by `id`.
+
+Every claim the code has drifted from:
+
+```bash
+jq '.nodes[] | select(.type=="claim")
+  | select(.groundingVerdict=="contradicted"
+           or any(.groundingOccurrences[]?; .groundingVerdict=="contradicted"))
+  | {id, name, groundingVerdict, groundingOccurrences}' <UA_DIR>/knowledge-graph.json
+```
+
 ### Edge Types (29 total in 7 categories)
 
 | Category | Types |

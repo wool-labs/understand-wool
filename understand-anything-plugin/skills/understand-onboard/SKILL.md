@@ -15,6 +15,7 @@ The knowledge graph JSON has this structure:
   - Code node types: file, function, class, module, concept
   - Non-code node types: config, document, service, table, endpoint, pipeline, schema, resource
   - Domain/knowledge node types: domain, flow, step, article, entity, topic, claim, source
+  - A `claim` node carrying `emittedBy: "understand-docs"` is a documentation claim with a `groundingVerdict`. Read the whole node before relaying its text, and follow the **Reading Claim Nodes** rules in the `understand-chat` skill: `ungrounded` means never checked, `contradicted` (tag `DRIFT`) means the code does otherwise, and on a node with `groundingOccurrences` each verdict holds only for its own occurrence. Step 6 skips claim nodes; if you cite one anyway, state its verdict with it.
   - IDs use the node type as prefix, e.g. `file:path`, `function:path:name`, `config:path`, `article:path`
 - `edges[]` — each has {source, target, type, direction, weight}
   - Key types: imports, contains, calls, depends_on, configures, documents, deploys, triggers, contains_flow, flow_step, related, cites
