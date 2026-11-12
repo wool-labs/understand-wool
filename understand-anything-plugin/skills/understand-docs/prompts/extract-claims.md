@@ -1,16 +1,20 @@
 <!--
 RECONSTRUCTED PROMPT — read this before trusting it.
 
-The wool run (5 passes × 3 subsystems, 813 surviving claims) was driven by a
+The wool run (5 passes per subsystem; 813 surviving claims across the two
+subsystems of the main grounding set) was driven by a
 prompt that lived only in a scratch directory and was never committed. This file
 reconstructs it from `CLAIM-GRAPH-PLAN.md` §Phase B, the shape of the claim
 records it produced, and the two rules `reconcile_claims.py` depends on.
 
 It carries two deliberate amendments to the canonical-form rules (marked
-**AMENDED**), made after measuring how the shipped rules distorted 3 of 63
-`overstated` claims. **Those amendments have not been run.** The last measured
-extraction agreement — tier-1 41% → 59% after canonical form, 78% at ≥2 passes —
-was produced by the *unamended* prompt. Re-measure before quoting a number.
+**AMENDED**), made after a reading of the claims graded `overstated` found that
+the shipped rules had distorted some of them. **Those amendments have not been
+run.** The last measured extraction agreement, on the load-balancing subsystem
+at two or more of five passes over all four claim types — tier-1 41.5% → 60.0%
+after canonical form under the shipped normaliser, 78% after clustering — was
+produced by the *unamended* prompt. Re-measure before quoting a
+number.
 -->
 
 # Task: extract atomic claims from documentation
@@ -59,7 +63,7 @@ Each claim gets:
 |---|---|
 | `claimType` | `factual` (states what the code does) · `instructional` (states what a caller must do) · `aspirational` (states intent or a goal) · `illustrative` (explains by analogy or example) |
 | `quantifier` | `universal` ("never", "every", "all", "always") · `existential` ("may raise", "can return") · `particular` (one specific thing) |
-| `sourceQuote` | the **shortest verbatim span** of `text` the claim came from |
+| `sourceQuote` | the **shortest verbatim span** of `text` the claim came from: one contiguous run of characters, copied exactly |
 | `fieldIndex` | index into the unit's `fields` when the claim came from one; `null` for prose |
 
 Only `factual` and `instructional` claims reach the grounding phase, but label
@@ -74,7 +78,8 @@ split. A sloppy quote either blocks a real merge or permits a false one.
 ## Canonical form — six rules
 
 Agreement between passes is prompt-bound, not model-bound. Adding these rules
-moved measured tier-1 agreement from 41% to 59% with no other change. Without
+moved measured tier-1 agreement on wool's load-balancing subsystem (claims at
+least two of five passes produced) from 41.5% to 60.0% with no other change. Without
 them, independent passes agree on *what* to extract and disagree on how to word
 it, and reconciliation collapses.
 
@@ -141,14 +146,20 @@ Write JSON to `{OUTPUT}`.
 Rules:
 
 - Every `docUnitId` must be one from the input, copied exactly.
-- `sourceQuote` must appear **verbatim** in that unit's `text`. It is checked.
+- `sourceQuote` must appear **verbatim** in that unit's `text`. It is checked,
+  by a script, as one contiguous span: same words, same case, same markup, with
+  only line breaks and runs of spaces treated as equal. Never join two parts of
+  a sentence with `...`, and never fix or re-case the text. When a qualifier the
+  claim depends on sits far from the verb, quote the longer span that contains
+  both. A pass with one quote that fails the check is discarded and re-run.
 - Do not emit `claimId` — it is a content hash derived downstream, and inventing
   one breaks the paired comparisons every measurement in this pipeline depends on.
 
 ## Before you write
 
 1. Each claim reads as a standalone sentence with an explicit subject.
-2. Each `sourceQuote` is present verbatim in its doc unit's `text`.
+2. Each `sourceQuote` is one contiguous span copied exactly from its doc unit's
+   `text`, with no `...` in it that the docstring does not have.
 3. No claim drops a `when` / `only` / `unless` / `via` its truth depends on.
 4. No claim asserts something the sentence coordinates but does not separate.
 5. No `claimText` contains backticks, roles, or emphasis markup.
