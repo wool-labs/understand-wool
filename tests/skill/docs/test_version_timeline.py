@@ -765,16 +765,21 @@ def test_main_should_fail_with_one_line_when_the_root_is_not_a_repository(
     assert target.exists() is (root == "plain")
 
 
-@pytest.mark.parametrize("content", [None, "", "{not json", "[]", "{}"],
-                         ids=["missing", "empty", "malformed", "list", "no-key"])
+@pytest.mark.parametrize(
+    "content",
+    [None, "", "{not json", "[]", "{}", '{"docUnits": {}}', '{"docUnits": [1, 2]}',
+     '{"docUnits": [{}]}', '{"docUnits": 3}'],
+    ids=["missing", "empty", "malformed", "list", "no-key", "units-not-a-list",
+         "units-not-objects", "unit-without-keys", "bundle-shaped"])
 def test_main_should_fail_with_one_line_when_the_doc_units_file_is_unreadable(
     version_timeline, monkeypatch, repo, tmp_path, capsys, content
 ):
     """Test a doc-units argument that is not a doc-units file.
 
     Given:
-        A repository and a doc-units path that is missing, empty, not JSON, or
-        JSON without a `docUnits` key.
+        A repository and a doc-units path that is missing, empty, not JSON,
+        JSON without a `docUnits` key, or JSON whose `docUnits` is not a list
+        of objects with `id` and `sourceFile`.
     When:
         main() is run with it.
     Then:

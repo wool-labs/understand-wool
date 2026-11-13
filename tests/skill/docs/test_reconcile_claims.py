@@ -316,7 +316,8 @@ def test_main_should_label_each_subsystem_by_its_pass_file_names(
 @pytest.mark.parametrize("names", [
     ["claims-lb-pass1.json", "claims-api-pass2.json"],
     ["pass-1.json", "pass-2.json"],
-], ids=["two-subsystems", "no-subsystem-in-name"])
+    ["claims-pass1.json", "claims-pass2.json"],
+], ids=["two-subsystems", "no-subsystem-in-name", "claims-prefix-only"])
 def test_main_should_exit_2_without_writing_when_no_label_can_be_determined(
     reconcile_claims, monkeypatch, tmp_path, capsys, names
 ):
@@ -324,7 +325,7 @@ def test_main_should_exit_2_without_writing_when_no_label_can_be_determined(
 
     Given:
         Prompt-shaped pass files with no `subsystem` key, named for two
-        different subsystems or for none.
+        different subsystems, for none, or `claims-pass<N>.json`.
     When:
         main() reconciles them with no --label.
     Then:

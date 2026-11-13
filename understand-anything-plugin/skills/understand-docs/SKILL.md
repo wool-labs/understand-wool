@@ -112,7 +112,7 @@ Do not start step 5 until the check exits 0 for every subsystem. If a pass fails
 python3 reconcile_claims.py claims-<sub>-pass1.json claims-<sub>-pass2.json ... --label <sub> --out <dir>
 ```
 
-It writes `claims-<sub>.json`, `claims-rejected-<sub>.json`, and, when a claim type was excluded, `claims-excluded-<sub>.json`. Without `--label`, the label is the `<sub>` the pass-file names share; when the names do not share one, the script prints a `NO LABEL` line on stderr, writes nothing, and exits 2. Run it once per subsystem.
+It writes `claims-<sub>.json`, `claims-rejected-<sub>.json`, and, when a claim type was excluded, `claims-excluded-<sub>.json`. Without `--label`, the label is a top-level `subsystem` key in the pass files when they carry one, and otherwise the `<sub>` the pass-file names share, other than `claims`; when neither gives a label, the script prints a `NO LABEL` line on stderr, writes nothing, and exits 2. Pass `--label` so the label is the one steps 5b and 6 name. Run it once per subsystem.
 
 **Step 5b reviews the reconciled claims.** `lint_claims.py` guards the seam between extraction and grounding: a claim that asserts more than its docstring did makes grounding report a defect the documentation never committed. For each subsystem, pass the one file of surviving claims step 5 wrote, `claims-<sub>.json`:
 
@@ -136,9 +136,20 @@ On wool's 813-claim grounding set the baseline is 0 quotes missing, 3 dropped qu
 
 Exit codes: 0 when no quote is missing; 1 when any quote is missing, or when `--max-flags N` is given and the two review counts together exceed `N`; 2 when no claims were read. The two review counts do not fail the run on their own, so read them. Without `--doc-units` the `quote not in unit` line reads `not checked (pass --doc-units)` and the quotes are unverified.
 
-**Step 6 must exit 0.** `build_grounding_bundles.py` prints an `orphaned` count with its bundle list and writes `orphaned-<sub>.json` beside the bundles on every run (`<sub>` is the claims file's name without `claims-` and `.json`, unless `--label` overrides it). A claim is orphaned when the doc unit it names is not in `--doc-units`; it is in no bundle and will receive no verdict. When there are any, the script prints an `ORPHANED` line on stderr and exits 1. With step 4b passed against the same doc-units file, the only cause is a different doc-units file at this step: pass the one used at step 4b and run step 6 again. The script also exits 1, with an `UNREADABLE SOURCE` line on stderr after one `UNREADABLE` or `PARSE FAILED` line per file, when a source file a doc unit names cannot be read or parsed under `--src-root`. Every claim on such a file is tagged `unresolved` and its grounding agent is told there is no code to check. The cause is a `--src-root` other than the one step 1 was given, or a Python other than the one step 1 ran under: correct it and run step 6 again. Do not dispatch grounding agents on the bundles of a run that exited 1.
+**Step 6 must exit 0.** `build_grounding_bundles.py` prints an `orphaned` count with its bundle list and writes `orphaned-<sub>.json` beside the bundles on every run (`<sub>` is the claims file's name without `claims-` and `.json`, unless `--label` overrides it). A claim is orphaned when the doc unit it names is not in `--doc-units`; it is in no bundle and will receive no verdict. When there are any, the script prints an `ORPHANED` line on stderr and exits 1. With step 4b passed against the same doc-units file, the only cause is a different doc-units file at this step: pass the one used at step 4b and run step 6 again.
 
-Each bundled doc unit carries a `groundingTarget`, and the script prints the share of claims under each: `direct` (the symbol has an executable body), `implementor` (a Protocol or a stub, verified against its implementors), and `unresolved`. A claim is `unresolved` when no class or function of its doc unit's name is in the parsed source file. A module docstring always lands there, since a module is neither, and on wool's 813-claim grounding set `unresolved` holds 3 claims (0.4%), all on one module docstring. An `unresolved` doc unit that is not a module (its `attachedKind` in the bundle is `class` or `function`) means the source at `--src-root` is not the commit step 1 harvested: check out that commit and run step 6 again.
+Each bundled doc unit carries a `groundingTarget`, and the script prints the share of claims under each: `direct` (the symbol has an executable body), `implementor` (a Protocol or a stub, verified against its implementors), and `unresolved` (no class or function of the doc unit's name is in the parsed source file). A module docstring is always `groundingTarget: unresolved`, since a module is neither, and that is the only expected case: on wool's 813-claim grounding set it holds 3 claims (0.4%), all on one module docstring. This `unresolved` is unrelated to `stats.unresolved` of step 2b.
+
+The script exits 1 in two more cases, after writing the bundles, because each sends grounding agents to claims with no code to check:
+
+| stderr | what it means |
+|---|---|
+| `UNREADABLE SOURCE`, after one `UNREADABLE` or `PARSE FAILED` line per file | A source file a doc unit names could not be read or parsed under `--src-root`. |
+| `UNRESOLVED SYMBOL`, followed by one line per doc unit giving its file and qualname | A class or function doc unit has no definition of that name in the source. |
+
+Step 6 reads source as steps 1 and 3 do, so against the source step 1 read neither line can appear. Each has one of two causes. If the arguments are wrong, correct them and run step 6 again: each doc unit's `sourceFile`, less `--path-prefix`, must name its file under `--src-root`, and the Python must be the one step 1 ran under. Otherwise the source changed after step 1: a file was edited, moved, or deleted, committed or not. Do not modify the repository to make it match step 1, and do not check anything out. Tell the user which files the lines name, and re-run the pipeline from step 1 on the source as it now is.
+
+Do not dispatch grounding agents on the bundles of a run that exited 1.
 
 Steps 12–14 are the *understanding* half and are independent of 7–11; a graph can be emitted with claims ungrounded, and each such claim node then reads `groundingVerdict: "ungrounded"` (see [Reading a claim node](#reading-a-claim-node)).
 
@@ -269,7 +280,7 @@ Uniqueness survives re-emission. Running step 14 with a previous output as `--gr
 - **A file enters the mirror stripped or not at all.** `strip_docstrings.py` never copies a file it could not parse.
 - **Evidence verification runs before consensus**, never after.
 - **Quorum counts distinct pass indices**, never a sum. Summing lets one pass clear quorum alone by emitting two wordings of the same assertion.
-- **Excluded, rejected, and orphaned claims are written out**, never dropped silently. `reconcile_claims.py` writes the first two; `build_grounding_bundles.py` writes `orphaned-<sub>.json` and exits 1 when it is not empty, and exits 1 when a source file it was to bundle claims for cannot be read.
+- **Excluded, rejected, and orphaned claims are written out**, never dropped silently. `reconcile_claims.py` writes the first two; `build_grounding_bundles.py` writes `orphaned-<sub>.json` and exits 1 when it is not empty, and exits 1 when a source file it was to bundle claims for cannot be read or a class or function doc unit does not resolve.
 - **Every `sourceQuote` is checked against its doc unit** by `lint_claims.py --doc-units --quotes-only` over the pass files, at step 4b. The extraction prompt promises agents the check, and the reconciler keeps only one quote per surviving claim, so the pass files are the only place every quote can be checked.
 - **Every claim node carries `groundingVerdict`, and `name` is never abbreviated.** An absent verdict reads as "inconclusive" to a consumer; a truncated name makes two claims one.
 - **Claim IDs are content hashes** (`docUnitId` + normalized text). Re-deriving them on a changed corpus invalidates any paired before/after comparison.

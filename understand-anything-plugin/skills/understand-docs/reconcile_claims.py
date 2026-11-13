@@ -44,7 +44,7 @@ Output:
 
 `<label>` is `--label`; else a top-level `subsystem` key in the pass files; else
 the subsystem named by the pass files, when every one is named
-`[claims-]<sub>-pass<N>.json` with the same `<sub>`. Exit codes: 0; 2 when no
+`[claims-]<sub>-pass<N>.json` with the same `<sub>` and `<sub>` is not `claims`. Exit codes: 0; 2 when no
 label can be determined, before anything is written.
 """
 
@@ -150,7 +150,9 @@ def label_from_names(paths: list[Path]) -> str | None:
     subs = set()
     for path in paths:
         m = PASS_NAME.match(path.stem)
-        if not m:
+        # `claims-pass1.json` names no subsystem; reading it as `claims` would
+        # collide across subsystems exactly as the old default did.
+        if not m or m["sub"] == "claims":
             return None
         subs.add(m["sub"])
     return subs.pop() if len(subs) == 1 else None

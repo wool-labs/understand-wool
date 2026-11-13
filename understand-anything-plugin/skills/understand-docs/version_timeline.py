@@ -307,6 +307,11 @@ def main() -> int:
     # exist was created by the `mkdir` below before git was asked about it.
     try:
         doc_units = json.loads(args.doc_units.read_text())["docUnits"]
+        if not (isinstance(doc_units, list) and all(
+                isinstance(u, dict) and isinstance(u.get("id"), str)
+                and isinstance(u.get("sourceFile"), str) for u in doc_units)):
+            raise ValueError("`docUnits` is not a list of doc units with "
+                             "`id` and `sourceFile`")
     except (OSError, ValueError, KeyError, TypeError) as exc:
         print(f"BAD DOC UNITS — {args.doc_units} is not a doc-units file step 1 "
               f"wrote ({type(exc).__name__}: {exc}). Pass the doc-units file "
