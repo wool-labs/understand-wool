@@ -301,10 +301,31 @@ def main() -> int:
     args = ap.parse_args()
 
     root = args.root.resolve()
+
+    # Both arguments are checked before anything is written. Each failure used
+    # to end in a traceback with no `VERDICT:` line, and a root that did not
+    # exist was created by the `mkdir` below before git was asked about it.
+    try:
+        doc_units = json.loads(args.doc_units.read_text())["docUnits"]
+        if not (isinstance(doc_units, list) and all(
+                isinstance(u, dict) and isinstance(u.get("id"), str)
+                and isinstance(u.get("sourceFile"), str) for u in doc_units)):
+            raise ValueError("`docUnits` is not a list of doc units with "
+                             "`id` and `sourceFile`")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        print(f"BAD DOC UNITS — {args.doc_units} is not a doc-units file step 1 "
+              f"wrote ({type(exc).__name__}: {exc}). Pass the doc-units file "
+              f"and run again.", file=sys.stderr)
+        return 1
+    try:
+        git(root, "rev-parse", "--git-dir")
+    except (OSError, subprocess.CalledProcessError):
+        print(f"NOT A REPOSITORY — {root} is not inside a git repository. Pass "
+              f"the directory step 1 was given and run again.", file=sys.stderr)
+        return 1
+
     out_dir = args.out or (resolve_ua_dir(root) / "docs")
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    doc_units = json.loads(args.doc_units.read_text())["docUnits"]
     tags = load_tags(root)
     if not tags:
         print("no version tags — cannot resolve releases", file=sys.stderr)

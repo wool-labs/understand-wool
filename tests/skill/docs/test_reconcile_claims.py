@@ -262,3 +262,111 @@ def test_main_should_produce_identical_survivors_for_any_pass_order(
 
     # Assert
     assert survivor_ids([contents[i] for i in perm]) == survivor_ids(contents)
+
+
+# ── output label ──────────────────────────────────────────────────────────
+
+
+def prompt_shaped_passes(root: Path, names: list[str]) -> list[Path]:
+    """Pass files in the extraction prompt's output format: no `subsystem` key."""
+    c = extraction_claim("Pool.spawn spawns workers.", "Spawns workers")
+    return [write_json(root / name, {"bundle": "b", "pass": i, "claims": [c]})
+            for i, name in enumerate(names, start=1)]
+
+
+def reconcile_unlabeled(module, monkeypatch, files, out):
+    monkeypatch.setattr(sys, "argv", ["reconcile_claims.py", *map(str, files),
+                                      "--out", str(out), "--quorum", "2"])
+    return module.main()
+
+
+def test_main_should_label_each_subsystem_by_its_pass_file_names(
+    reconcile_claims, monkeypatch, tmp_path
+):
+    """Test two subsystems reconciled into one directory without --label.
+
+    Given:
+        Prompt-shaped pass files `claims-lb-pass{1,2}.json` and
+        `claims-api-pass{1,2}.json`, which carry no `subsystem` key.
+    When:
+        main() reconciles each subsystem's passes into the same directory with
+        no --label.
+    Then:
+        It should exit 0 both times and write `claims-lb.json` and
+        `claims-api.json`, each with its own subsystem's survivor.
+    """
+    # Arrange
+    out = tmp_path / "out"
+    lb = prompt_shaped_passes(tmp_path, ["claims-lb-pass1.json", "claims-lb-pass2.json"])
+    api = prompt_shaped_passes(tmp_path, ["claims-api-pass1.json", "claims-api-pass2.json"])
+
+    # Act
+    codes = [reconcile_unlabeled(reconcile_claims, monkeypatch, files, out)
+             for files in (lb, api)]
+
+    # Assert
+    assert codes == [0, 0]
+    assert sorted(p.name for p in out.glob("claims-*.json")) == [
+        "claims-api.json", "claims-lb.json",
+        "claims-rejected-api.json", "claims-rejected-lb.json"]
+    for sub in ("lb", "api"):
+        assert len(json.loads((out / f"claims-{sub}.json").read_text())["claims"]) == 1
+
+
+@pytest.mark.parametrize("names", [
+    ["claims-lb-pass1.json", "claims-api-pass2.json"],
+    ["pass-1.json", "pass-2.json"],
+    ["claims-pass1.json", "claims-pass2.json"],
+], ids=["two-subsystems", "no-subsystem-in-name", "claims-prefix-only"])
+def test_main_should_exit_2_without_writing_when_no_label_can_be_determined(
+    reconcile_claims, monkeypatch, tmp_path, capsys, names
+):
+    """Test pass files whose names give no single subsystem.
+
+    Given:
+        Prompt-shaped pass files with no `subsystem` key, named for two
+        different subsystems, for none, or `claims-pass<N>.json`.
+    When:
+        main() reconciles them with no --label.
+    Then:
+        It should exit 2 with a NO LABEL line and write no claim file.
+    """
+    # Arrange
+    out = tmp_path / "out"
+    files = prompt_shaped_passes(tmp_path, names)
+
+    # Act
+    code = reconcile_unlabeled(reconcile_claims, monkeypatch, files, out)
+
+    # Assert
+    assert code == 2
+    assert capsys.readouterr().err.startswith("NO LABEL")
+    assert list(out.glob("*.json")) == []
+
+
+def test_main_should_prefer_the_subsystem_key_over_the_file_names(
+    reconcile_claims, monkeypatch, tmp_path
+):
+    """Test the label precedence when pass files carry a `subsystem` key.
+
+    Given:
+        Pass files named `claims-lb-pass{1,2}.json` whose payloads carry
+        `subsystem: layer:load-balancing`.
+    When:
+        main() reconciles them with no --label.
+    Then:
+        It should write `claims-load-balancing.json`.
+    """
+    # Arrange
+    out = tmp_path / "out"
+    c = extraction_claim("Pool.spawn spawns workers.", "Spawns workers")
+    files = [write_json(tmp_path / f"claims-lb-pass{i}.json",
+                        {"pass": i, "subsystem": "layer:load-balancing", "claims": [c]})
+             for i in (1, 2)]
+
+    # Act
+    code = reconcile_unlabeled(reconcile_claims, monkeypatch, files, out)
+
+    # Assert
+    assert code == 0
+    assert (out / "claims-load-balancing.json").is_file()

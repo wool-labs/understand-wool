@@ -724,3 +724,84 @@ def test_main_should_date_an_edited_docstring_by_its_committed_lines(
     # Assert
     (entry,) = payload["entries"]
     assert (entry["sha"], entry["authoredAt"], entry["release"]) == (first, T1, "v0.1.0")
+
+
+@pytest.mark.parametrize("root", ["plain", "missing"])
+def test_main_should_fail_with_one_line_when_the_root_is_not_a_repository(
+    version_timeline, monkeypatch, tmp_path, capsys, root
+):
+    """Test a repository root that git does not recognize.
+
+    Given:
+        A root that is an ordinary directory, or does not exist, outside any
+        git repository.
+    When:
+        main() is run on it with a valid doc-units file.
+    Then:
+        It should exit 1 with one NOT A REPOSITORY line naming the root, write
+        no timeline, and not create the root.
+    """
+    # Arrange
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    target = tmp_path / root
+    if root == "plain":
+        target.mkdir()
+    doc_units = tmp_path / "doc-units.json"
+    doc_units.write_text(json.dumps({"docUnits": [doc_unit("docunit:a", "a.py", [1, 1])]}))
+    out = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", [
+        "version_timeline.py", str(target), "--doc-units", str(doc_units), "--out", str(out)])
+
+    # Act
+    code = version_timeline.main()
+
+    # Assert
+    err = capsys.readouterr().err
+    assert code == 1
+    assert err.count("\n") == 1
+    assert err.startswith("NOT A REPOSITORY")
+    assert str(target.resolve()) in err
+    assert not out.exists()
+    assert target.exists() is (root == "plain")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [None, "", "{not json", "[]", "{}", '{"docUnits": {}}', '{"docUnits": [1, 2]}',
+     '{"docUnits": [{}]}', '{"docUnits": 3}'],
+    ids=["missing", "empty", "malformed", "list", "no-key", "units-not-a-list",
+         "units-not-objects", "unit-without-keys", "bundle-shaped"])
+def test_main_should_fail_with_one_line_when_the_doc_units_file_is_unreadable(
+    version_timeline, monkeypatch, repo, tmp_path, capsys, content
+):
+    """Test a doc-units argument that is not a doc-units file.
+
+    Given:
+        A repository and a doc-units path that is missing, empty, not JSON,
+        JSON without a `docUnits` key, or JSON whose `docUnits` is not a list
+        of objects with `id` and `sourceFile`.
+    When:
+        main() is run with it.
+    Then:
+        It should exit 1 with one BAD DOC UNITS line naming the file and write
+        no timeline.
+    """
+    # Arrange
+    commit(repo, "pkg/a.py", 'def f():\n    """One."""\n', T1, tag="v0.1.0")
+    doc_units = tmp_path / "doc-units.json"
+    if content is not None:
+        doc_units.write_text(content)
+    out = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", [
+        "version_timeline.py", str(repo), "--doc-units", str(doc_units), "--out", str(out)])
+
+    # Act
+    code = version_timeline.main()
+
+    # Assert
+    err = capsys.readouterr().err
+    assert code == 1
+    assert err.count("\n") == 1
+    assert err.startswith("BAD DOC UNITS")
+    assert str(doc_units) in err
+    assert not out.exists()

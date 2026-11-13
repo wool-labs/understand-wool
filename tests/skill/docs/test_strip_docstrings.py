@@ -504,6 +504,33 @@ def test_main_should_rebuild_the_mirror_when_the_destination_is_inside_the_sourc
     assert not (dest / ".ua").exists()
 
 
+def test_main_should_skip_a_directory_whose_name_ends_in_py(
+    strip_docstrings, monkeypatch, tmp_path
+):
+    """Test a source tree holding a directory named like a module.
+
+    Given:
+        A source tree with a directory `pkg/thing.py/` beside `pkg/pool.py`.
+    When:
+        main() mirrors the tree with --verify.
+    Then:
+        It should exit 0 and mirror pool.py without treating the directory as
+        a source file.
+    """
+    # Arrange
+    src = make_src(tmp_path)
+    (src / "pkg" / "thing.py").mkdir()
+    dest = tmp_path / "mirror"
+
+    # Act
+    code = run_main(strip_docstrings, monkeypatch, src, dest, extra=("--verify",))
+
+    # Assert
+    assert code == 0
+    assert (dest / "pkg" / "pool.py").is_file()
+    assert not (dest / "pkg" / "thing.py").exists()
+
+
 def test_main_should_fail_verify_when_a_file_was_left_out(
     strip_docstrings, monkeypatch, tmp_path, capsys
 ):

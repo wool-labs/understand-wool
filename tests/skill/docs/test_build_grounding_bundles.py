@@ -12,6 +12,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from tests.skill.docs.conftest import write_json
 
 SOURCE = '''\
@@ -41,20 +43,21 @@ class Pool:
 '''
 
 
-def corpus(tmp_path: Path, *, source: str = SOURCE) -> dict:
+def corpus(tmp_path: Path, *, source: str = SOURCE, rel: str = "pkg/pool.py",
+           ghost: bool = False) -> dict:
     """Write a one-file source tree plus doc units and claims for it."""
     src = tmp_path / "src"
-    (src / "pkg").mkdir(parents=True)
-    (src / "pkg" / "pool.py").write_text(source)
+    (src / rel).parent.mkdir(parents=True)
+    (src / rel).write_bytes(source if isinstance(source, bytes) else source.encode())
 
     def unit(uid: str, kind: str, qualname: str) -> dict:
         return {
             "id": f"docunit:{uid}",
-            "sourceFile": "pkg/pool.py",
+            "sourceFile": rel,
             "sourceLine": 1,
             "docLineRange": [1, 1],
             "attachedKind": kind,
-            "attachedTo": f"{kind}:pkg/pool.py:{qualname}",
+            "attachedTo": f"{kind}:{rel}:{qualname}",
             "text": "irrelevant",
         }
 
@@ -62,7 +65,8 @@ def corpus(tmp_path: Path, *, source: str = SOURCE) -> dict:
         unit("u-spawn", "function", "Pool.spawn"),
         unit("u-proto", "class", "WorkerLike"),
         unit("u-probe", "function", "Pool.probe"),
-        unit("u-ghost", "function", "Pool.vanish"),
+        unit("u-mod", "module", "pkg.pool"),
+        *([unit("u-ghost", "function", "Pool.vanish")] if ghost else []),
     ]})
 
     def claim(cid: str, uid: str) -> dict:
@@ -80,12 +84,13 @@ def corpus(tmp_path: Path, *, source: str = SOURCE) -> dict:
         claim("c-spawn", "u-spawn"),
         claim("c-proto", "u-proto"),
         claim("c-probe", "u-probe"),
-        claim("c-ghost", "u-ghost"),
+        claim("c-mod", "u-mod"),
+        *([claim("c-ghost", "u-ghost")] if ghost else []),
     ]})
     return {"src": src, "units": units, "claims": claims}
 
 
-def run_main(module, monkeypatch, tmp_path, files, extra=()):
+def run_main(module, monkeypatch, tmp_path, files, extra=(), code=0):
     out = tmp_path / "bundles"
     argv = ["build_grounding_bundles.py",
             "--claims", str(files["claims"]),
@@ -93,7 +98,7 @@ def run_main(module, monkeypatch, tmp_path, files, extra=()):
             "--src-root", str(files["src"]),
             "--label", "t", "--out", str(out), *extra]
     monkeypatch.setattr(sys, "argv", argv)
-    assert module.main() == 0
+    assert module.main() == code
     bundles = [json.loads(p.read_text()) for p in sorted(out.glob("ground-t-*.json"))]
     targets = {}
     for b in bundles:
@@ -170,17 +175,18 @@ def test_main_should_classify_implementor_when_body_is_stub(
     assert targets["claim:c-probe"] == "implementor"
 
 
-def test_main_should_classify_unresolved_when_symbol_absent(
-    build_grounding_bundles, monkeypatch, tmp_path
+def test_main_should_classify_unresolved_and_exit_zero_when_doc_unit_is_a_module(
+    build_grounding_bundles, monkeypatch, capsys, tmp_path
 ):
-    """Test routing of a claim whose symbol does not exist.
+    """Test the one ordinary source of `unresolved` claims.
 
     Given:
-        A claim attached to Pool.vanish, which is not in the source.
+        A claim on the module docstring of a readable source file.
     When:
         main() builds the bundles.
     Then:
-        It should classify the unit as `unresolved`.
+        It should classify the unit `unresolved` and exit 0 with no
+        UNRESOLVED SYMBOL line.
     """
     # Arrange
     files = corpus(tmp_path)
@@ -189,7 +195,86 @@ def test_main_should_classify_unresolved_when_symbol_absent(
     _, targets = run_main(build_grounding_bundles, monkeypatch, tmp_path, files)
 
     # Assert
+    assert targets["claim:c-mod"] == "unresolved"
+    assert "UNRESOLVED SYMBOL" not in capsys.readouterr().err
+
+
+def test_main_should_fail_and_list_the_unit_when_a_function_is_unresolved(
+    build_grounding_bundles, monkeypatch, capsys, tmp_path
+):
+    """Test a class or function doc unit with no definition in the source.
+
+    Given:
+        A claim attached to Pool.vanish, which is not in the source, as when
+        the source changed after harvest.
+    When:
+        main() builds the bundles.
+    Then:
+        It should classify the unit `unresolved`, print an UNRESOLVED SYMBOL
+        line listing the file and qualname, and exit 1.
+    """
+    # Arrange
+    files = corpus(tmp_path, ghost=True)
+
+    # Act
+    _, targets = run_main(build_grounding_bundles, monkeypatch, tmp_path, files, code=1)
+    err = capsys.readouterr().err
+
+    # Assert
     assert targets["claim:c-ghost"] == "unresolved"
+    assert "UNRESOLVED SYMBOL — 1 class or function doc unit(s)" in err
+    assert "pkg/pool.py  Pool.vanish" in err
+
+
+@pytest.mark.parametrize("source", [
+    b"\xef\xbb\xbf" + SOURCE.encode(),
+    b"# -*- coding: latin-1 -*-\n# caf\xe9\n" + SOURCE.encode(),
+], ids=["bom", "coding-line"])
+def test_main_should_read_source_as_the_harvester_does(
+    build_grounding_bundles, monkeypatch, capsys, tmp_path, source
+):
+    """Test source files that step 1 reads through `tokenize.open`.
+
+    Given:
+        A source file with a UTF-8 byte-order mark, or a latin-1 coding line
+        and a non-UTF-8 byte.
+    When:
+        main() builds the bundles.
+    Then:
+        It should classify Pool.spawn `direct` and exit 0 with no
+        UNREADABLE line.
+    """
+    # Arrange
+    files = corpus(tmp_path, source=source)
+
+    # Act
+    _, targets = run_main(build_grounding_bundles, monkeypatch, tmp_path, files)
+
+    # Assert
+    assert targets["claim:c-spawn"] == "direct"
+    assert "UNREADABLE" not in capsys.readouterr().err
+
+
+def test_main_should_resolve_a_symbol_in_a_file_whose_name_holds_a_colon(
+    build_grounding_bundles, monkeypatch, tmp_path
+):
+    """Test parsing of `attachedTo` when the path contains a colon.
+
+    Given:
+        The corpus written to `pkg/odd:name.py`.
+    When:
+        main() builds the bundles.
+    Then:
+        It should classify Pool.spawn `direct` and exit 0.
+    """
+    # Arrange
+    files = corpus(tmp_path, rel="pkg/odd:name.py")
+
+    # Act
+    _, targets = run_main(build_grounding_bundles, monkeypatch, tmp_path, files)
+
+    # Assert
+    assert targets["claim:c-spawn"] == "direct"
 
 
 def test_main_should_filter_and_report_when_only_claims_supplied(
@@ -222,7 +307,7 @@ def test_main_should_filter_and_report_when_only_claims_supplied(
     assert "MISSING claim:c-unknown" in out
 
 
-def test_main_should_warn_loudly_when_source_fails_to_parse(
+def test_main_should_fail_loudly_when_source_fails_to_parse(
     build_grounding_bundles, monkeypatch, capsys, tmp_path
 ):
     """Test the loud-parse regression — a silent SyntaxError misroutes claims.
@@ -233,19 +318,49 @@ def test_main_should_warn_loudly_when_source_fails_to_parse(
         main() builds the bundles.
     Then:
         It should print a PARSE FAILED warning naming the file and the running
-        interpreter version, and classify the claims `unresolved`.
+        interpreter version, classify the claims `unresolved`, print an
+        UNREADABLE SOURCE line and no UNRESOLVED SYMBOL line, and exit 1.
     """
     # Arrange
     files = corpus(tmp_path, source="def broken(:\n    pass\n")
 
     # Act
-    _, targets = run_main(build_grounding_bundles, monkeypatch, tmp_path, files)
+    _, targets = run_main(build_grounding_bundles, monkeypatch, tmp_path, files, code=1)
     err = capsys.readouterr().err
 
     # Assert
     assert "PARSE FAILED" in err
     assert "pool.py" in err
     assert f"{sys.version_info.major}.{sys.version_info.minor}" in err
+    assert "UNREADABLE SOURCE — 1 source file(s)" in err
+    assert "UNRESOLVED SYMBOL" not in err
+    assert set(targets.values()) == {"unresolved"}
+
+
+def test_main_should_fail_when_the_source_root_is_wrong(
+    build_grounding_bundles, monkeypatch, capsys, tmp_path
+):
+    """Test a --src-root under which no doc unit's source file exists.
+
+    Given:
+        A claims file and doc units for pkg/pool.py, and a --src-root that
+        does not exist.
+    When:
+        main() builds the bundles.
+    Then:
+        It should print UNREADABLE for the file and an UNREADABLE SOURCE line
+        naming the root, and exit 1.
+    """
+    # Arrange
+    files = {**corpus(tmp_path), "src": tmp_path / "nonexistent"}
+
+    # Act
+    _, targets = run_main(build_grounding_bundles, monkeypatch, tmp_path, files, code=1)
+    err = capsys.readouterr().err
+
+    # Assert
+    assert "UNREADABLE " in err
+    assert f"UNREADABLE SOURCE — 1 source file(s) named by the doc units could not be read or parsed under {tmp_path / 'nonexistent'}" in err
     assert set(targets.values()) == {"unresolved"}
 
 
