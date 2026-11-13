@@ -34,11 +34,18 @@ claim than a real one.
 
 Usage:
     python3 reconcile_claims.py PASS.json [PASS.json ...] \
-        [--quorum 3] [--threshold 0.85] [--quote-gate 0.7] [--out DIR]
+        [--label SUB] [--quorum 3] [--threshold 0.85] [--quote-gate 0.7] \
+        [--out DIR]
 
 Output:
-    <out>/claims-<bundle>.json           surviving claims, with variants
-    <out>/claims-rejected-<bundle>.json  sub-quorum claims, never silently dropped
+    <out>/claims-<label>.json            surviving claims, with variants
+    <out>/claims-rejected-<label>.json   sub-quorum claims, never silently dropped
+    <out>/claims-excluded-<label>.json   claims of an excluded claimType
+
+`<label>` is `--label`; else a top-level `subsystem` key in the pass files; else
+the subsystem named by the pass files, when every one is named
+`[claims-]<sub>-pass<N>.json` with the same `<sub>`. Exit codes: 0; 2 when no
+label can be determined, before anything is written.
 """
 
 from __future__ import annotations
@@ -128,6 +135,25 @@ def cluster(keys: list[str], quotes: dict[str, set[frozenset[str]]],
     for k in keys:
         groups[find(k)].append(k)
     return [sorted(v) for v in groups.values()]
+
+
+PASS_NAME = re.compile(r"^(?:claims-)?(?P<sub>.+)-pass\d+$")
+
+
+def label_from_names(paths: list[Path]) -> str | None:
+    """The `<sub>` every pass file's name gives, or None if they disagree.
+
+    The extraction prompt's output has no `subsystem` key, so the label used to
+    fall back to the literal `claims`, and a second subsystem reconciled into
+    the same directory overwrote the first.
+    """
+    subs = set()
+    for path in paths:
+        m = PASS_NAME.match(path.stem)
+        if not m:
+            return None
+        subs.add(m["sub"])
+    return subs.pop() if len(subs) == 1 else None
 
 
 def main() -> int:
@@ -221,7 +247,13 @@ def main() -> int:
     total = len(survivors) + len(rejected)
     avg = sum(per_pass) / len(per_pass) if per_pass else 0
     ge2 = sum(v for k, v in support_hist.items() if k >= 2)
-    label = args.label or (subsystem or "claims").replace("layer:", "").replace(":", "_")
+    label = args.label or (subsystem.replace("layer:", "").replace(":", "_")
+                           if subsystem else label_from_names(args.passes))
+    if not label:
+        print("NO LABEL — the pass files carry no `subsystem` key and their names "
+              "do not share one `<sub>-pass<N>` stem. Pass --label <sub> and run "
+              "again.", file=sys.stderr)
+        return 2
 
     stats = {
         "subsystem": subsystem,
