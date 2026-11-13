@@ -22,6 +22,10 @@ So each doc unit is tagged with a `groundingTarget`:
     direct       the symbol has an executable body; verify there
     implementor  the symbol is a Protocol/stub; the agent must locate
                  implementors and consumers and verify the contract against them
+    unresolved   no class or function of that name is in the parsed source
+                 file. A module docstring always lands here, since a module is
+                 neither; any other doc unit here means the source at
+                 --src-root is not the source step 1 harvested
 
 `implementor` units carry `candidateSites` — a grep-derived, deliberately
 over-inclusive list of files that name the symbol. It is a starting point for
@@ -42,8 +46,9 @@ Output:
 
 `<label>` is `--label`, or the claims file's name without `claims-` and `.json`.
 
-Exit codes: 0; 1 when any claim is orphaned. The bundles are still written, and
-they are incomplete.
+Exit codes: 0; 1 when any claim is orphaned, or when a source file a doc unit
+names cannot be read or parsed (an `UNREADABLE SOURCE` line on stderr). The
+bundles are still written, and they are incomplete or misrouted.
 """
 
 from __future__ import annotations
@@ -61,13 +66,20 @@ from typing import Any
 SCHEMA_VERSION = "0.1.0"
 
 
-def symbol_index(path: Path) -> dict[str, tuple[ast.AST, ast.ClassDef | None]]:
-    """qualname -> (node, owning class)."""
+def symbol_index(path: Path, failed: list[Path] | None = None
+                 ) -> dict[str, tuple[ast.AST, ast.ClassDef | None]]:
+    """qualname -> (node, owning class).
+
+    A file that cannot be read or parsed yields an empty index, is reported on
+    stderr, and is appended to `failed` when one is given.
+    """
     out: dict[str, tuple[ast.AST, ast.ClassDef | None]] = {}
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         print(f"  UNREADABLE {path}: {exc}", file=sys.stderr)
+        if failed is not None:
+            failed.append(path)
         return out
     except SyntaxError as exc:
         # Loud, because the downstream symptom is indistinguishable from a
@@ -80,6 +92,8 @@ def symbol_index(path: Path) -> dict[str, tuple[ast.AST, ast.ClassDef | None]]:
               f"this file will be reported `unresolved`. Running Python "
               f"{sys.version_info.major}.{sys.version_info.minor}; this pipeline "
               f"needs 3.10+.", file=sys.stderr)
+        if failed is not None:
+            failed.append(path)
         return out
 
     def walk(node: ast.AST, prefix: str = "", owner: ast.ClassDef | None = None) -> None:
@@ -212,6 +226,10 @@ def main() -> int:
     # another harvest is the ordinary way this happens, and it used to lose
     # every such claim with no count, no line of output, and no artifact.
     orphaned: list[dict[str, Any]] = []
+    # Source files a doc unit names that could not be read or parsed. Every
+    # claim on one is tagged `unresolved` and a grounding agent is told there
+    # is no code to check, so a wrong --src-root or interpreter fails the run.
+    unread: list[Path] = []
 
     for unit_id, unit_claims in sorted(by_unit.items()):
         unit = units.get(unit_id)
@@ -227,7 +245,7 @@ def main() -> int:
         kind, _, qualname = unit["attachedTo"].split(":", 2)
 
         if rel not in index_cache:
-            index_cache[rel] = symbol_index(args.src_root / rel)
+            index_cache[rel] = symbol_index(args.src_root / rel, unread)
         node, owner = index_cache[rel].get(qualname, (None, None))
 
         if node is None:
@@ -337,6 +355,13 @@ def main() -> int:
               f"listed in {orphan_path}. The claims file and the doc-units file "
               f"come from different harvests: pass the doc-units file the "
               f"claims were extracted from and run again.", file=sys.stderr)
+    if unread:
+        print(f"UNREADABLE SOURCE — {len(unread)} source file(s) named by the "
+              f"doc units could not be read or parsed under {args.src_root}, so "
+              f"every claim on them is tagged `unresolved`. Pass the source "
+              f"root step 1 was given, run under the Python step 1 ran under, "
+              f"and run again.", file=sys.stderr)
+    if orphaned or unread:
         return 1
     return 0
 

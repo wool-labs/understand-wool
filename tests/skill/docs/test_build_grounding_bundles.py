@@ -85,7 +85,7 @@ def corpus(tmp_path: Path, *, source: str = SOURCE) -> dict:
     return {"src": src, "units": units, "claims": claims}
 
 
-def run_main(module, monkeypatch, tmp_path, files, extra=()):
+def run_main(module, monkeypatch, tmp_path, files, extra=(), code=0):
     out = tmp_path / "bundles"
     argv = ["build_grounding_bundles.py",
             "--claims", str(files["claims"]),
@@ -93,7 +93,7 @@ def run_main(module, monkeypatch, tmp_path, files, extra=()):
             "--src-root", str(files["src"]),
             "--label", "t", "--out", str(out), *extra]
     monkeypatch.setattr(sys, "argv", argv)
-    assert module.main() == 0
+    assert module.main() == code
     bundles = [json.loads(p.read_text()) for p in sorted(out.glob("ground-t-*.json"))]
     targets = {}
     for b in bundles:
@@ -222,7 +222,7 @@ def test_main_should_filter_and_report_when_only_claims_supplied(
     assert "MISSING claim:c-unknown" in out
 
 
-def test_main_should_warn_loudly_when_source_fails_to_parse(
+def test_main_should_fail_loudly_when_source_fails_to_parse(
     build_grounding_bundles, monkeypatch, capsys, tmp_path
 ):
     """Test the loud-parse regression — a silent SyntaxError misroutes claims.
@@ -233,20 +233,84 @@ def test_main_should_warn_loudly_when_source_fails_to_parse(
         main() builds the bundles.
     Then:
         It should print a PARSE FAILED warning naming the file and the running
-        interpreter version, and classify the claims `unresolved`.
+        interpreter version, classify the claims `unresolved`, print an
+        UNREADABLE SOURCE line, and exit 1.
     """
     # Arrange
     files = corpus(tmp_path, source="def broken(:\n    pass\n")
 
     # Act
-    _, targets = run_main(build_grounding_bundles, monkeypatch, tmp_path, files)
+    _, targets = run_main(build_grounding_bundles, monkeypatch, tmp_path, files, code=1)
     err = capsys.readouterr().err
 
     # Assert
     assert "PARSE FAILED" in err
     assert "pool.py" in err
     assert f"{sys.version_info.major}.{sys.version_info.minor}" in err
+    assert "UNREADABLE SOURCE — 1 source file(s)" in err
     assert set(targets.values()) == {"unresolved"}
+
+
+def test_main_should_fail_when_the_source_root_is_wrong(
+    build_grounding_bundles, monkeypatch, capsys, tmp_path
+):
+    """Test a --src-root under which no doc unit's source file exists.
+
+    Given:
+        A claims file and doc units for pkg/pool.py, and a --src-root that
+        does not exist.
+    When:
+        main() builds the bundles.
+    Then:
+        It should print UNREADABLE for the file and an UNREADABLE SOURCE line
+        naming the root, and exit 1.
+    """
+    # Arrange
+    files = {**corpus(tmp_path), "src": tmp_path / "nonexistent"}
+
+    # Act
+    _, targets = run_main(build_grounding_bundles, monkeypatch, tmp_path, files, code=1)
+    err = capsys.readouterr().err
+
+    # Assert
+    assert "UNREADABLE " in err
+    assert f"UNREADABLE SOURCE — 1 source file(s) named by the doc units could not be read or parsed under {tmp_path / 'nonexistent'}" in err
+    assert set(targets.values()) == {"unresolved"}
+
+
+def test_main_should_exit_zero_when_only_a_module_docstring_is_unresolved(
+    build_grounding_bundles, monkeypatch, capsys, tmp_path
+):
+    """Test the one ordinary source of `unresolved` claims.
+
+    Given:
+        A readable source file and a claim on its module docstring.
+    When:
+        main() builds the bundles over that claim alone.
+    Then:
+        It should classify the claim `unresolved` and exit 0 with no
+        UNREADABLE SOURCE line.
+    """
+    # Arrange
+    files = corpus(tmp_path)
+    units = json.loads(files["units"].read_text())
+    units["docUnits"] = [{
+        "id": "docunit:u-mod", "sourceFile": "pkg/pool.py", "sourceLine": 1,
+        "docLineRange": [1, 1], "attachedKind": "module",
+        "attachedTo": "module:pkg/pool.py:pkg.pool", "text": "irrelevant",
+    }]
+    files["units"].write_text(json.dumps(units))
+    claims = json.loads(files["claims"].read_text())
+    claims["claims"] = [{**claims["claims"][0], "id": "claim:c-mod",
+                         "docUnitId": "docunit:u-mod"}]
+    files["claims"].write_text(json.dumps(claims))
+
+    # Act
+    _, targets = run_main(build_grounding_bundles, monkeypatch, tmp_path, files)
+
+    # Assert
+    assert targets == {"claim:c-mod": "unresolved"}
+    assert "UNREADABLE" not in capsys.readouterr().err
 
 
 def test_main_should_emit_every_claim_once_when_bundles_split(
