@@ -30,7 +30,7 @@ Each script is deterministic, stdlib-only, and prints what it did. Nothing here 
 | 3 | **Strip** docstrings into a mirror | `strip_docstrings.py --verify` | mirror tree |
 | 4 | **Extract claims** — *N agents per subsystem, identical prompt* | agents + `prompts/extract-claims.md` | `claims-<sub>-pass<N>.json` |
 | 4b | **Check quotes** — must exit 0 before step 5 | `lint_claims.py --doc-units --quotes-only` | pass or fail on stdout |
-| 5 | **Reconcile** passes into a claim set | `reconcile_claims.py` | `claims-<sub>.json` + rejected/excluded |
+| 5 | **Reconcile** passes into a claim set | `reconcile_claims.py --label <sub>` | `claims-<sub>.json` + rejected/excluded |
 | 5b | **Lint** claims against their source quotes | `lint_claims.py --doc-units` | review queue on stdout |
 | 6 | **Bundle** claims for grounding — must exit 0 | `build_grounding_bundles.py` | `ground-<sub>-<n>.json`, `orphaned-<sub>.json` |
 | 7 | **Ground** — *2 agents per bundle* | agents + `prompts/ground-claims.md` | `<bundle>-pass<N>.json` |
@@ -44,7 +44,7 @@ Each script is deterministic, stdlib-only, and prints what it did. Nothing here 
 
 **Step 2b is a measurement, and no later step reads its result.** It reports whether the dates of doc units are spread widely enough that recency could tell which of two contradicting doc units is newer. Step 13 is unaffected by the result: a contradiction between two claims is one `contradicts` edge for the pair, in either order, whatever step 2b reports. Do not order the pair by recency, and never write a `supersedes` edge: step 14 drops any edge type it does not know, so the contradiction would vanish from the graph. The step is optional; run it when the user wants the measurement, report the verdict to them, and continue the pipeline. Nothing in this step calls for a change to the user's repository: do not commit, stage, stash, fetch, tag, or unshallow on its account.
 
-Run it as `python3 version_timeline.py <repo-root> --doc-units <doc-units.json> --report`, where `<repo-root>` is the directory step 1 was given and the checkout is the commit step 1 harvested. It prints a `VERDICT:` line on stderr and writes the verdict to `stats.verdict` in `version-timeline.json`, with the reason, when there is one, in `stats.verdictReason`. The script exits 0 on every verdict, so read the line. A non-zero exit with a traceback and no `VERDICT:` line means an argument is wrong: `<repo-root>` is not inside a git repository, or the doc-units path is missing or not JSON. Correct the argument and run again.
+Run it as `python3 version_timeline.py <repo-root> --doc-units <doc-units.json> --report`, where `<repo-root>` is the directory step 1 was given and the checkout is the commit step 1 harvested. It prints a `VERDICT:` line on stderr and writes the verdict to `stats.verdict` in `version-timeline.json`, with the reason, when there is one, in `stats.verdictReason`. The script exits 0 on every verdict, so read the line. It exits 1 with one line on stderr, before writing anything, when an argument is wrong: `NOT A REPOSITORY` when `git rev-parse` fails on `<repo-root>`, and `BAD DOC UNITS` when the doc-units path is missing, empty, or not a doc-units file. Correct the argument named and run again. `NOT A REPOSITORY` carries git's own message in parentheses. When that message says the directory is not a git repository or cannot be entered, the argument is wrong; any other message, such as git not running or refusing a repository it does not consider safe, is a fault in git and not in the argument: stop and tell the user the line.
 
 | verdict | what it means |
 |---|---|
@@ -106,6 +106,14 @@ It prints the number of claims read from each file, then exits 0 when every quot
 
 Do not start step 5 until the check exits 0 for every subsystem. If a pass fails the check again after one re-run, stop and tell the user which pass and which quotes; do not re-run it a third time.
 
+**Step 5 reconciles each subsystem's passes on its own.** Pass one subsystem's pass files and name the subsystem:
+
+```bash
+python3 reconcile_claims.py claims-<sub>-pass1.json claims-<sub>-pass2.json ... --label <sub> --out <dir>
+```
+
+It writes `claims-<sub>.json`, `claims-rejected-<sub>.json`, and, when a claim type was excluded, `claims-excluded-<sub>.json`. Without `--label`, the label is the `<sub>` the pass-file names share, other than `claims`, and otherwise a top-level `subsystem` key in the pass files, with `layer:` removed and each `:` made `_`; when neither gives a label, the script prints a `NO LABEL` line on stderr, writes nothing, and exits 2. Pass `--label` so the label is the one steps 5b and 6 name. Run it once per subsystem.
+
 **Step 5b reviews the reconciled claims.** `lint_claims.py` guards the seam between extraction and grounding: a claim that asserts more than its docstring did makes grounding report a defect the documentation never committed. For each subsystem, pass the one file of surviving claims step 5 wrote, `claims-<sub>.json`:
 
 ```bash
@@ -128,7 +136,30 @@ On wool's 813-claim grounding set the baseline is 0 quotes missing, 3 dropped qu
 
 Exit codes: 0 when no quote is missing; 1 when any quote is missing, or when `--max-flags N` is given and the two review counts together exceed `N`; 2 when no claims were read. The two review counts do not fail the run on their own, so read them. Without `--doc-units` the `quote not in unit` line reads `not checked (pass --doc-units)` and the quotes are unverified.
 
-**Step 6 must exit 0.** `build_grounding_bundles.py` prints an `orphaned` count with its bundle list and writes `orphaned-<sub>.json` beside the bundles on every run (`<sub>` is the claims file's name without `claims-` and `.json`, unless `--label` overrides it). A claim is orphaned when the doc unit it names is not in `--doc-units`; it is in no bundle and will receive no verdict. When there are any, the script prints an `ORPHANED` line on stderr and exits 1. With step 4b passed against the same doc-units file, the only cause is a different doc-units file at this step: pass the one used at step 4b and run step 6 again. Do not dispatch grounding agents on the bundles of a run that exited 1.
+**Step 6 must exit 0.** Run it once per subsystem, with `--src-root` set to the `root` field of the doc-units file and an `--out` directory no earlier run of step 6 wrote into:
+
+```bash
+python3 build_grounding_bundles.py --claims claims-<sub>.json --doc-units doc-units.json --src-root <the "root" field of doc-units.json> --label <sub> --out <new dir>
+```
+
+Each doc unit's `sourceFile` is relative to `root`, so this `--src-root` needs no `--path-prefix`. The script overwrites the bundles it writes and leaves any others, so a re-run into a used directory that writes fewer bundles leaves stale ones beside them.
+
+`build_grounding_bundles.py` prints an `orphaned` count with its bundle list and writes `orphaned-<sub>.json` beside the bundles on every run (`<sub>` is the claims file's name without `claims-` and `.json`, unless `--label` overrides it). A claim is orphaned when the doc unit it names is not in `--doc-units`; it is in no bundle and will receive no verdict. When there are any, the script prints an `ORPHANED` line on stderr and exits 1. With step 4b passed against the same doc-units file, the only cause is a different doc-units file at this step: pass the one used at step 4b and run step 6 again.
+
+Each bundled doc unit carries a `groundingTarget`, and the script prints the share of claims under each: `direct` (the symbol has an executable body), `implementor` (a Protocol or a stub, verified against its implementors), and `unresolved` (a module docstring, or a class or function with no definition of that name in the parsed source file). A module docstring is `groundingTarget: unresolved` without a lookup, since a module is neither, and that is the only expected case: on wool's 813-claim grounding set it holds 3 claims (0.4%), all on one module docstring. This `unresolved` is unrelated to `stats.unresolved` of step 2b.
+
+The script exits 1 in two more cases, after writing the bundles, because each sends grounding agents to claims with no code to check:
+
+| stderr | what it means |
+|---|---|
+| `UNREADABLE SOURCE`, after one `UNREADABLE` or `PARSE FAILED` line per file | A source file a doc unit names could not be read or parsed under `--src-root`. |
+| `UNRESOLVED SYMBOL`, followed by one line per doc unit giving its file and qualname | A class or function doc unit has no definition of that name in the source. |
+
+Step 6 reads source as steps 1 and 3 do, so against the source step 1 read, under the Python step 1 ran under, neither line can appear. The script compares its arguments with what step 1 recorded in the doc-units file and prints each difference on stderr, whatever the exit code: `SOURCE ROOT` when `--src-root` is not the `root` step 1 read joined with `--path-prefix`, and `INTERPRETER` when the running Python is not the one step 1 ran under. A doc-units file written before step 1 recorded its Python has no `python` field and never yields an `INTERPRETER` line. Either line means an argument is wrong: run step 6 again into a new `--out` with the root or the Python the line names, and when that root or Python is not available, stop and tell the user the line.
+
+When the run exits 1 with neither line, the source changed after step 1: a file was edited, moved, or deleted, committed or not. Do not modify the repository to make it match step 1, and do not check anything out. Stop and tell the user which files the lines name, and re-run the pipeline from step 1 on the source as it now is only when the user agrees: a re-run dispatches every extraction and grounding agent again, and its claim ids do not pair with this run's.
+
+Do not dispatch grounding agents on the bundles of a run that exited 1.
 
 Steps 12–14 are the *understanding* half and are independent of 7–11; a graph can be emitted with claims ungrounded, and each such claim node then reads `groundingVerdict: "ungrounded"` (see [Reading a claim node](#reading-a-claim-node)).
 
@@ -259,7 +290,7 @@ Uniqueness survives re-emission. Running step 14 with a previous output as `--gr
 - **A file enters the mirror stripped or not at all.** `strip_docstrings.py` never copies a file it could not parse.
 - **Evidence verification runs before consensus**, never after.
 - **Quorum counts distinct pass indices**, never a sum. Summing lets one pass clear quorum alone by emitting two wordings of the same assertion.
-- **Excluded, rejected, and orphaned claims are written out**, never dropped silently. `reconcile_claims.py` writes the first two; `build_grounding_bundles.py` writes `orphaned-<sub>.json` and exits 1 when it is not empty.
+- **Excluded, rejected, and orphaned claims are written out**, never dropped silently. `reconcile_claims.py` writes the first two; `build_grounding_bundles.py` writes `orphaned-<sub>.json` and exits 1 when it is not empty, and exits 1 when a source file it was to bundle claims for cannot be read or a class or function doc unit does not resolve.
 - **Every `sourceQuote` is checked against its doc unit** by `lint_claims.py --doc-units --quotes-only` over the pass files, at step 4b. The extraction prompt promises agents the check, and the reconciler keeps only one quote per surviving claim, so the pass files are the only place every quote can be checked.
 - **Every claim node carries `groundingVerdict`, and `name` is never abbreviated.** An absent verdict reads as "inconclusive" to a consumer; a truncated name makes two claims one.
 - **Claim IDs are content hashes** (`docUnitId` + normalized text). Re-deriving them on a changed corpus invalidates any paired before/after comparison.
