@@ -400,6 +400,41 @@ def test_verify_evidence_should_reject_when_the_path_names_a_directory(
     assert reason.startswith("no such file")
 
 
+FORM_FEED_SOURCE = "\f\n" * 5 + "".join(f"v{i} = {i}\n" for i in range(6, 13)) + (
+    "result = compute_total()\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("lines", "expected"), [([13, 13], True), ([18, 18], False)],
+    ids=["newline-counted", "shifted-by-form-feeds"],
+)
+def test_verify_evidence_should_count_lines_by_newline_when_the_file_has_form_feeds(
+    reconcile_verdicts, tmp_path, lines, expected
+):
+    """Test line numbering in a file with form feeds above the cited line.
+
+    Given:
+        A mirror file with five form-feed lines above `result = ...` at line 13,
+        counting newlines, and a citation quoting that line.
+    When:
+        verify_evidence checks the citation at line 13 and at line 18, where
+        it would sit if each form feed also ended a line.
+    Then:
+        It should accept line 13 and reject line 18.
+    """
+    # Arrange
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "pool.py").write_text(FORM_FEED_SOURCE)
+    item = evidence(lines, "result = compute_total()")
+
+    # Act
+    ok, reason = reconcile_verdicts.verify_evidence(item, tmp_path)
+
+    # Assert
+    assert ok is expected, reason
+
+
 @settings(max_examples=50)
 @given(data=st.data())
 def test_verify_evidence_should_accept_any_verbatim_span(

@@ -22,6 +22,11 @@ So each doc unit is tagged with a `groundingTarget`:
     direct       the symbol has an executable body; verify there
     implementor  the symbol is a Protocol/stub; the agent must locate
                  implementors and consumers and verify the contract against them
+    unresolved   a module docstring, which is tagged so without a lookup;
+                 or a class or function whose file could not be read or
+                 parsed, or holds no definition of that name. A class or
+                 function here means the source at --src-root is not the
+                 source step 1 read, and fails the run
 
 `implementor` units carry `candidateSites` — a grep-derived, deliberately
 over-inclusive list of files that name the symbol. It is a starting point for
@@ -31,8 +36,14 @@ search beyond the list, and to say so when it finds nothing.
 
 Usage:
     python3 build_grounding_bundles.py --claims claims-<label>.json \\
-        --doc-units doc-units.json --src-root <real source root> \\
-        [--max-claims 60] [--out DIR]
+        --doc-units doc-units.json --src-root <the doc units' `root`> \\
+        [--path-prefix PREFIX/] [--max-claims 60] [--out DIR]
+
+`--src-root` is compared with the `root` field step 1 wrote into the
+doc-units file, joined with `--path-prefix`, and the running Python with the
+`python` field.
+A difference is printed as a `SOURCE ROOT` or `INTERPRETER` line on stderr and
+does not change the exit code; it names the cause when the run fails.
 
 Output:
     <out>/ground-<label>-<n>.json    the bundles
@@ -42,8 +53,10 @@ Output:
 
 `<label>` is `--label`, or the claims file's name without `claims-` and `.json`.
 
-Exit codes: 0; 1 when any claim is orphaned. The bundles are still written, and
-they are incomplete.
+Exit codes: 0; 1 when any claim is orphaned, when a source file a doc unit
+names cannot be read or parsed (an `UNREADABLE SOURCE` line on stderr), or when
+a class or function doc unit is unresolved (an `UNRESOLVED SYMBOL` line). The
+bundles are still written, and they are incomplete or misrouted.
 """
 
 from __future__ import annotations
@@ -54,6 +67,7 @@ import json
 import re
 import subprocess
 import sys
+import tokenize
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -61,14 +75,28 @@ from typing import Any
 SCHEMA_VERSION = "0.1.0"
 
 
-def symbol_index(path: Path) -> dict[str, tuple[ast.AST, ast.ClassDef | None]]:
-    """qualname -> (node, owning class)."""
+def symbol_index(path: Path, failed: list[Path] | None = None
+                 ) -> dict[str, tuple[ast.AST, ast.ClassDef | None]]:
+    """qualname -> (node, owning class).
+
+    A file that cannot be read or parsed yields an empty index, is reported on
+    stderr, and is appended to `failed` when one is given.
+    """
     out: dict[str, tuple[ast.AST, ast.ClassDef | None]] = {}
+    # `tokenize.open`, as steps 1 and 3 read source: it honours a byte-order
+    # mark and a PEP 263 coding line. Reading as plain UTF-8 failed on files
+    # the harvester had read, and blamed the source root or the interpreter.
+    # A malformed coding line raises SyntaxError here, before any parse.
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-    except OSError as exc:
+        with tokenize.open(path) as fh:
+            text = fh.read()
+    except (OSError, UnicodeDecodeError, SyntaxError) as exc:
         print(f"  UNREADABLE {path}: {exc}", file=sys.stderr)
+        if failed is not None:
+            failed.append(path)
         return out
+    try:
+        tree = ast.parse(text)
     except SyntaxError as exc:
         # Loud, because the downstream symptom is indistinguishable from a
         # symbol that genuinely does not exist: every claim on this file
@@ -78,8 +106,10 @@ def symbol_index(path: Path) -> dict[str, tuple[ast.AST, ast.ClassDef | None]]:
         # anywhere — the interpreter, not the corpus, was the defect.
         print(f"  PARSE FAILED {path}:{exc.lineno} — {exc.msg}. Every claim on "
               f"this file will be reported `unresolved`. Running Python "
-              f"{sys.version_info.major}.{sys.version_info.minor}; this pipeline "
-              f"needs 3.10+.", file=sys.stderr)
+              f"{sys.version_info.major}.{sys.version_info.minor}.",
+              file=sys.stderr)
+        if failed is not None:
+            failed.append(path)
         return out
 
     def walk(node: ast.AST, prefix: str = "", owner: ast.ClassDef | None = None) -> None:
@@ -197,7 +227,22 @@ def main() -> int:
               f"{len(wanted - found)} requested IDs not present in this claim set")
         for cid in sorted(wanted - found):
             print(f"  MISSING {cid}")
-    units = {u["id"]: u for u in json.loads(args.doc_units.read_text())["docUnits"]}
+    doc_units = json.loads(args.doc_units.read_text())
+    units = {u["id"]: u for u in doc_units["docUnits"]}
+    # Step 1 records where it read the source and under which Python. Either
+    # differing is the one cause of UNREADABLE SOURCE or UNRESOLVED SYMBOL
+    # that an argument corrects, so it is printed whether or not the run fails.
+    harvested_root = doc_units.get("root")
+    if harvested_root and (Path(harvested_root) / args.path_prefix).resolve() \
+            != args.src_root.resolve():
+        print(f"SOURCE ROOT — --src-root {args.src_root} with --path-prefix "
+              f"'{args.path_prefix}' is not the root step 1 read, "
+              f"{harvested_root}.", file=sys.stderr)
+    running = f"{sys.version_info.major}.{sys.version_info.minor}"
+    harvested_python = doc_units.get("python")
+    if harvested_python and harvested_python != running:
+        print(f"INTERPRETER — step 1 ran under Python {harvested_python}; this "
+              f"is Python {running}.", file=sys.stderr)
     label = args.label or args.claims.stem.replace("claims-", "")
 
     by_unit: dict[str, list[dict]] = defaultdict(list)
@@ -212,6 +257,10 @@ def main() -> int:
     # another harvest is the ordinary way this happens, and it used to lose
     # every such claim with no count, no line of output, and no artifact.
     orphaned: list[dict[str, Any]] = []
+    # Source files a doc unit names that could not be read or parsed. Every
+    # claim on one is tagged `unresolved` and a grounding agent is told there
+    # is no code to check, so a wrong --src-root or interpreter fails the run.
+    unread: list[Path] = []
 
     for unit_id, unit_claims in sorted(by_unit.items()):
         unit = units.get(unit_id)
@@ -224,15 +273,25 @@ def main() -> int:
             continue
         src_file = unit["sourceFile"]
         rel = src_file[len(args.path_prefix):] if src_file.startswith(args.path_prefix) else src_file
-        kind, _, qualname = unit["attachedTo"].split(":", 2)
+        # `kind:<sourceFile>:<qualname>`. A qualname holds no colon and a file
+        # name may, so the qualname is taken from the right.
+        qualname = unit["attachedTo"].rsplit(":", 1)[1]
 
         if rel not in index_cache:
-            index_cache[rel] = symbol_index(args.src_root / rel)
+            index_cache[rel] = symbol_index(args.src_root / rel, unread)
         node, owner = index_cache[rel].get(qualname, (None, None))
 
-        if node is None:
-            target, reason = "unresolved", "symbol not found in AST"
+        if unit["attachedKind"] == "module":
+            # A module is neither a class nor a function. Its qualname is its
+            # dotted path, which can equal a symbol's: a root-level `main.py`
+            # defining `main` would otherwise ground the module docstring
+            # against the function's body.
+            node, owner = None, None
+            target, reason = "unresolved", "module docstring"
             sites: list[str] = []
+        elif node is None:
+            target, reason = "unresolved", "symbol not found in AST"
+            sites = []
         elif isinstance(node, ast.ClassDef) and is_protocol(node):
             target, reason = "implementor", "class-level docstring on a Protocol"
             sites = candidate_sites(args.src_root, qualname, rel)
@@ -337,6 +396,31 @@ def main() -> int:
               f"listed in {orphan_path}. The claims file and the doc-units file "
               f"come from different harvests: pass the doc-units file the "
               f"claims were extracted from and run again.", file=sys.stderr)
+    if unread:
+        print(f"UNREADABLE SOURCE — {len(unread)} source file(s) named by the "
+              f"doc units could not be read or parsed under {args.src_root}, so "
+              f"every claim on them is tagged `groundingTarget: unresolved`. "
+              f"A SOURCE ROOT or INTERPRETER line above names the argument to "
+              f"correct; without one, the source changed after step 1.",
+              file=sys.stderr)
+    # The harvester and this script walk the same class and function bodies,
+    # so against the source step 1 read, only a module docstring is
+    # unresolved. A class or function here means the source is not that.
+    # Units on an unreadable file are already reported above.
+    lost = [r for r in records
+            if r["groundingTarget"] == "unresolved" and r["attachedKind"] != "module"
+            and args.src_root / r["sourceFile"] not in unread]
+    if lost:
+        print(f"UNRESOLVED SYMBOL — {len(lost)} class or function doc unit(s) "
+              f"have no definition of that name in the source under "
+              f"{args.src_root}, so their {sum(len(r['claims']) for r in lost)} "
+              f"claim(s) would be graded against no code. A SOURCE ROOT or "
+              f"INTERPRETER line above names the argument to correct; without "
+              f"one, the source changed after step 1. The units:",
+              file=sys.stderr)
+        for r in lost:
+            print(f"  {r['sourceFile']}  {r['qualname']}", file=sys.stderr)
+    if orphaned or unread or lost:
         return 1
     return 0
 

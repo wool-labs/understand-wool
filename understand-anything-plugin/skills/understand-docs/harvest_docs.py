@@ -862,6 +862,7 @@ def main() -> int:
     write_json(out_dir / "doc-units.json", {
         "schemaVersion": SCHEMA_VERSION,
         "root": str(root),
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
         "sources": prefixes,
         "stats": {
             "files": len(paths),
