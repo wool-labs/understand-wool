@@ -1042,3 +1042,29 @@ def test_main_should_write_identical_output_when_run_twice(
     for name in ("doc-units.json", "e0-candidates.json"):
         assert (tmp_path / "one" / name).read_bytes() == \
             (tmp_path / "two" / name).read_bytes()
+
+
+def test_main_should_record_the_root_and_the_python_it_read_under(
+    harvest_docs, monkeypatch, tmp_path
+):
+    """Test the provenance step 6 compares its arguments against.
+
+    Given:
+        A git repository with one documented module.
+    When:
+        main() harvests it.
+    Then:
+        It should write the resolved root and the running Python's
+        major.minor version into doc-units.json.
+    """
+    # Arrange
+    root = make_repo(tmp_path, DOCUMENTED)
+    out = tmp_path / "out"
+
+    # Act
+    harvest(harvest_docs, monkeypatch, root, out)
+
+    # Assert
+    payload = json.loads((out / "doc-units.json").read_text())
+    assert payload["root"] == str(root.resolve())
+    assert payload["python"] == f"{sys.version_info.major}.{sys.version_info.minor}"
