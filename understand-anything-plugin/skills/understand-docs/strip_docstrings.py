@@ -181,8 +181,11 @@ def main() -> int:
     # sits inside the analyzed tree, so a mirror from an earlier run can be
     # under `src`; listing it would mirror the mirror, and the listed files are
     # gone once the destination is cleared below.
+    # `is_file()`, because a directory may be named `*.py` and reading it
+    # raised an uncaught `IsADirectoryError`.
     files = sorted(p for p in src.rglob("*.py")
-                   if "__pycache__" not in p.parts
+                   if p.is_file()
+                   and "__pycache__" not in p.parts
                    and not p.is_relative_to(dest))
     if not files:
         # Before the destination is cleared, so a mistyped source root does not
