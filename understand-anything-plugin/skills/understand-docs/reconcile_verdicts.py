@@ -184,7 +184,14 @@ def verify_evidence(item: dict, mirror: Path) -> tuple[bool, str]:
     if not path.is_file():
         return False, f"no such file: {rel}"
 
-    lines = path.read_text(encoding="utf-8").splitlines()
+    # Split on "\n" alone. `str.splitlines` also breaks on form feeds and other
+    # separators that Python, `ast`, and an agent's file reader treat as
+    # ordinary characters, so it numbers lines differently from every tool that
+    # produced the citation; five form feeds above a line moved it by five. The
+    # mirror was written the same way (see `strip_docstrings.py`).
+    lines = path.read_text(encoding="utf-8").split("\n")
+    if lines[-1] == "":
+        lines.pop()
     span = item.get("lines")
     # A single-element `[473]` is a one-line citation, not a malformed one. Two
     # of eight passes in the boundary run emitted that shape and had 45
@@ -203,7 +210,7 @@ def verify_evidence(item: dict, mirror: Path) -> tuple[bool, str]:
     code = item.get("code") or ""
     if any(m in code for m in STUB_MARKERS):
         return False, "quotes a stripped-docstring marker"
-    quoted = [norm(l) for l in code.splitlines() if norm(l)]
+    quoted = [norm(l) for l in code.split("\n") if norm(l)]
     if not quoted:
         return False, "empty quote"
     if all(q in {"...", "pass"} for q in quoted):
