@@ -104,12 +104,23 @@ Three counts in the output are easy to confuse. `stats.unresolved` is every doc 
 python3 strip_docstrings.py <src-root> <dest-root> --verify
 ```
 
+`<src-root>` is the `root` field of `doc-units.json`: the `<repo-root>` step 1 was given, never a `--src` path, because every `sourceFile` a later step looks up in the mirror is relative to it. `<dest-root>` is `<work>/mirror`, or the destination the user names after a `NOT A MIRROR` refusal below; every later reference to the mirror, `{MIRROR}` in an agent prompt and `--mirror` in a command, means that same path. **The script deletes `<dest-root>` and rebuilds it on every run**, so it must hold nothing but the mirror; each mirror carries a `.understand-docs-mirror` marker at its root, which is how the script recognises one.
+
+These lines stop the script before it deletes or writes anything, each with exit 1. The `NOT A MIRROR` line names its cause after the dash.
+
+| stderr line | what it means | what to do |
+|---|---|---|
+| `NO SOURCE` | `<src-root>` does not exist or holds no `.py` file. | Correct `<src-root>` as defined above and run again. |
+| `NOT A MIRROR`, "the source root … is … or lies inside it" | `<dest-root>` is `<src-root>` or a directory above it, so deleting it would delete the source. The arguments are swapped or mistyped. | Run again with both arguments as defined above. Never empty or remove that directory, and do not ask the user to. |
+| `NOT A MIRROR`, "… is a file" | `<dest-root>` names a file. | Stop and tell the user the line. Do not delete the file. Run again only with a destination the user names. |
+| `NOT A MIRROR`, "… holds files and no … marker" | `<dest-root>` is a directory the script cannot tell from one it did not build. A mirror built before the marker existed is refused the same way: it holds only `.py` files whose docstrings read `<docstring removed>`. | Stop and tell the user the line, and that it may be an old mirror. Never delete the directory, whatever it appears to hold. Run again only with a destination the user names, or with `<dest-root>` once the user has emptied or removed it. |
+
 Proceed to step 4 in exactly two cases:
 
 1. The script exits 0 and prints `verify: line counts preserved, 0 docstrings leaked, N symbols kept in place`.
 2. The script exits 1, `verify FAILED: UNPARSEABLE` is the only `verify FAILED:` heading on stderr, and every file named in the `UNPARSEABLE — N file(s) left out of the mirror` list printed above that heading is one the table below tells you to leave out.
 
-In every other case, stop. Steps 1 and 3 read files the same way, so a file step 3 leaves out is one step 1 skipped: step 1 prints a `SKIPPED (unparseable)` line on stderr for each, and no claim is extracted from it. A claim made elsewhere about code in a left-out file has nothing to be checked against and grades `unverifiable`. The script exits 1 before mirroring anything, with a `NO SOURCE` line, when `<src-root>` does not exist or holds no `.py` file; correct the path and run it again.
+In every other case, stop. Steps 1 and 3 read files the same way, so a file step 3 leaves out is one step 1 skipped: step 1 prints a `SKIPPED (unparseable)` line on stderr for each, and no claim is extracted from it. A claim made elsewhere about code in a left-out file has nothing to be checked against and grades `unverifiable`.
 
 `--verify` runs five checks on the finished mirror and prints every failure, each under its own heading, before it exits:
 

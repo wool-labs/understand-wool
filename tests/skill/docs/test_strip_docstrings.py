@@ -587,6 +587,168 @@ def test_main_should_remove_a_stale_mirror_file_when_its_source_stops_parsing(
     assert not (dest / "pkg" / "later.py").exists()
 
 
+# ── main() — the destination it deletes ───────────────────────────────────
+
+
+@pytest.mark.parametrize("state", ["absent", "empty"])
+def test_main_should_mark_the_mirror_when_the_destination_is_new(
+    strip_docstrings, monkeypatch, tmp_path, state
+):
+    """Test that every mirror carries the marker a later run looks for.
+
+    Given:
+        A destination that does not exist, or exists and is empty.
+    When:
+        main() mirrors the tree with --verify.
+    Then:
+        It should exit 0 and write the marker file at the mirror's root.
+    """
+    # Arrange
+    src = make_src(tmp_path)
+    dest = tmp_path / "dest"
+    if state == "empty":
+        dest.mkdir()
+
+    # Act
+    code = run_main(strip_docstrings, monkeypatch, src, dest, extra=("--verify",))
+
+    # Assert
+    assert code == 0
+    assert (dest / strip_docstrings.MIRROR_MARK).is_file()
+    assert (dest / "pkg" / "pool.py").is_file()
+
+
+def test_main_should_replace_a_marked_mirror(strip_docstrings, monkeypatch, tmp_path):
+    """Test a second run onto a mirror the script built.
+
+    Given:
+        A mirror built by an earlier run, with a file added to it since.
+    When:
+        main() mirrors the tree into it again.
+    Then:
+        It should exit 0, remove the added file, and keep the marker.
+    """
+    # Arrange
+    src = make_src(tmp_path)
+    dest = tmp_path / "dest"
+    assert run_main(strip_docstrings, monkeypatch, src, dest) == 0
+    add_file(dest, "pkg/added.py", "x = 1\n")
+
+    # Act
+    code = run_main(strip_docstrings, monkeypatch, src, dest)
+
+    # Assert
+    assert code == 0
+    assert not (dest / "pkg" / "added.py").exists()
+    assert (dest / strip_docstrings.MIRROR_MARK).is_file()
+
+
+@pytest.mark.parametrize("kind, told", [
+    ("unmarked-directory", "do not delete this directory"),
+    ("file", "do not delete this file"),
+])
+def test_main_should_refuse_a_destination_that_is_not_a_mirror(
+    strip_docstrings, monkeypatch, tmp_path, capsys, kind, told
+):
+    """Test that a mistyped destination is not deleted.
+
+    Given:
+        A destination that is a directory holding files and no marker, or is
+        a file.
+    When:
+        main() runs with --verify.
+    Then:
+        It should exit 1 with a NOT A MIRROR line that names the destination
+        and tells the agent not to delete it, mirror nothing, and leave the
+        destination as it was.
+    """
+    # Arrange
+    src = make_src(tmp_path)
+    dest = tmp_path / "dest"
+    if kind == "file":
+        dest.write_text("notes\n")
+    else:
+        add_file(dest, "notes.txt", "notes\n")
+
+    # Act
+    code = run_main(strip_docstrings, monkeypatch, src, dest, extra=("--verify",))
+
+    # Assert
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "NOT A MIRROR" in captured.err
+    assert str(dest) in captured.err
+    assert told in captured.err
+    assert "verify:" not in captured.out
+    if kind == "file":
+        assert dest.read_text() == "notes\n"
+    else:
+        assert (dest / "notes.txt").read_text() == "notes\n"
+        assert not (dest / "pkg").exists()
+
+
+@pytest.mark.parametrize("where", ["same", "parent"])
+def test_main_should_refuse_a_destination_that_holds_the_source(
+    strip_docstrings, monkeypatch, tmp_path, capsys, where
+):
+    """Test that deleting the destination can never delete the source.
+
+    Given:
+        A destination that is the source root, or a directory above it, with
+        a marker file planted in it.
+    When:
+        main() runs.
+    Then:
+        It should exit 1 with a NOT A MIRROR line that names the argument fix
+        and never suggests emptying or removing the destination, and leave the
+        source intact.
+    """
+    # Arrange
+    src = make_src(tmp_path)
+    dest = src if where == "same" else tmp_path
+    (dest / strip_docstrings.MIRROR_MARK).write_text("planted\n")
+
+    # Act
+    code = run_main(strip_docstrings, monkeypatch, src, dest)
+
+    # Assert
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "NOT A MIRROR" in captured.err
+    assert "arguments are swapped or mistyped" in captured.err
+    assert "emptied or removed" not in captured.err
+    assert (src / "pkg" / "pool.py").read_text() == DOCUMENTED
+
+
+def test_main_should_refuse_an_unmarked_destination_holding_every_source_file(
+    strip_docstrings, monkeypatch, tmp_path, capsys
+):
+    """Test a destination mistyped as the source's only package.
+
+    Given:
+        A source root whose only Python files are in one package, passed as
+        the destination.
+    When:
+        main() runs with --verify.
+    Then:
+        It should exit 1 with a NOT A MIRROR line rather than NO SOURCE, and
+        leave the package intact.
+    """
+    # Arrange
+    src = make_src(tmp_path)
+    dest = src / "pkg"
+
+    # Act
+    code = run_main(strip_docstrings, monkeypatch, src, dest, extra=("--verify",))
+
+    # Assert
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "NOT A MIRROR" in captured.err
+    assert "NO SOURCE" not in captured.err
+    assert (src / "pkg" / "pool.py").read_text() == DOCUMENTED
+
+
 # ── main() --verify — failure paths ───────────────────────────────────────
 #
 # A correct strip() never trips these checks, so each test swaps in a strip()
