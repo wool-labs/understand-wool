@@ -13,16 +13,6 @@ This is deliberately *not* a blind third pass. You are given both prior verdicts
 Every docstring there is replaced by `"""<docstring removed>"""`; line numbers are identical to the real files. **Evidence must be executable code — never prose.** These claims were extracted *from* docstrings, so citing one proves nothing. Comments are fine for navigation but are not evidence.
 
 <!-- BEGIN SHARED TAXONOMY -->
-<!--
-SHARED TAXONOMY BLOCK.
-
-This section is included verbatim in BOTH `ground-claims.md` and
-`tiebreak-verdicts.md`. If the two drift, the adjudicator applies a different
-rule than the passes it adjudicates — on precisely the claims that were hardest
-to judge. Keep them byte-identical; `check_prompts.py` asserts it, and
-`check_prompts.py --sync` regenerates them from this file.
--->
-
 ## Verdicts
 
 Exactly one per claim. Decide by asking a question about **repair**:

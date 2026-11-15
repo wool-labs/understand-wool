@@ -30,16 +30,6 @@ Comments *are* present and may be used for navigation, but a comment is not evid
   `candidateSites` is a *starting point and is neither complete nor authoritative* — Python protocols are structural, so an implementor need not reference the protocol at all. Search by method name, by call site, by duck-typed usage. If after real effort you find no implementing code, say so: verdict `unverifiable`, and set `searchedFor`.
 
 <!-- BEGIN SHARED TAXONOMY -->
-<!--
-SHARED TAXONOMY BLOCK.
-
-This section is included verbatim in BOTH `ground-claims.md` and
-`tiebreak-verdicts.md`. If the two drift, the adjudicator applies a different
-rule than the passes it adjudicates — on precisely the claims that were hardest
-to judge. Keep them byte-identical; `check_prompts.py` asserts it, and
-`check_prompts.py --sync` regenerates them from this file.
--->
-
 ## Verdicts
 
 Exactly one per claim. Decide by asking a question about **repair**:
