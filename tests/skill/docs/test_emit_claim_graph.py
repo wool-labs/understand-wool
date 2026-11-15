@@ -729,3 +729,132 @@ def test_main_should_emit_unique_names_and_a_verdict_on_every_claim_node(
                                          "unverifiable", "ungrounded", "mixed",
                                          "overstated"}
                for n in nodes.values())
+
+
+def test_main_should_name_the_file_and_ids_of_each_dropped_design_item(
+    emit_claim_graph, monkeypatch, tmp_path, capsys
+):
+    """Test the per-item lines under the `dropped:` count.
+
+    Given:
+        Two claims and a design-edges file holding a `supersedes` edge, an
+        edge to a claim the run does not hold, and a principle realized by
+        one held claim and one unknown claim.
+    When:
+        main() merges them into the knowledge graph.
+    Then:
+        It should print one line per dropped item naming the file and, for
+        the edge and the principle, the claim id it does not hold.
+    """
+    # Arrange
+    claims = [design_claim("claim:a", grounding()),
+              design_claim("claim:b", grounding(), text="B holds.")]
+    edges = tmp_path / "design-edges-3.json"
+    edges.write_text(json.dumps({"bundle": 3, "edges": [
+        {"from": "claim:a", "to": "claim:b", "type": "supersedes", "rationale": "r"},
+        {"from": "claim:a", "to": "claim:ghost", "type": "refines", "rationale": "r"},
+    ], "principles": [
+        {"statement": "Pools own their workers.", "realizedBy": ["claim:a", "claim:gone"],
+         "justifiedBy": [], "tension": None, "scope": ["pool"], "confidence": "high"},
+    ]}))
+    monkeypatch.setattr(sys, "argv", [
+        "emit_claim_graph.py", "--graph", str(make_graph(tmp_path / "graph.json")),
+        "--design-claims", str(make_design_claims(tmp_path / "dc.json", claims)),
+        "--doc-units", str(make_doc_units(tmp_path / "du.json")),
+        "--edges", str(edges), "--out", str(tmp_path / "kg.json")])
+
+    # Act
+    assert emit_claim_graph.main() == 0
+    out = capsys.readouterr().out
+
+    # Assert
+    assert "design-edges-3.json: unmapped edge type 'supersedes' from claim:a to claim:b" in out
+    assert "design-edges-3.json: refines edge; not held: ['claim:ghost']" in out
+    assert "design-edges-3.json: principle 'Pools own their workers.' resolves to 1 claim(s); not held: ['claim:gone']" in out
+
+
+def run_edges(module, monkeypatch, tmp_path, edge_files: list) -> int:
+    """Run emit_claim_graph.main() over two held claims and the given edges files."""
+    claims = [design_claim("claim:a", grounding()),
+              design_claim("claim:b", grounding(), text="B holds.")]
+    monkeypatch.setattr(sys, "argv", [
+        "emit_claim_graph.py", "--graph", str(make_graph(tmp_path / "graph.json")),
+        "--design-claims", str(make_design_claims(tmp_path / "dc.json", claims)),
+        "--doc-units", str(make_doc_units(tmp_path / "du.json")),
+        "--edges", *map(str, edge_files), "--out", str(tmp_path / "kg.json")])
+    return module.main()
+
+
+GOOD_EDGES = {"bundle": 1, "edges": [
+    {"from": "claim:a", "to": "claim:b", "type": "refines", "rationale": "r"}], "principles": []}
+
+
+@pytest.mark.parametrize("content, reason", [
+    ("[]", "not a JSON object"),
+    ('{"edges": [], "principles": [{"realizedBy": ["claim:a", "claim:b"]}]}',
+     "a principle has no `statement`"),
+    ('```json\n{"edges": []}\n```', "JSONDecodeError"),
+    ('{"edges": [], "principles": [{"statement": "S.", "realizedBy": ["claim:a", "claim:b"], '
+     '"confidence": "Medium"}]}', "`confidence` is 'Medium'"),
+    ('{"edges": {}, "principles": []}', "`edges` is not a list"),
+], ids=["top-level-list", "principle-without-statement", "fenced-json",
+        "confidence-out-of-vocabulary", "edges-not-a-list"])
+def test_main_should_name_and_skip_a_malformed_edges_file(
+    emit_claim_graph, monkeypatch, tmp_path, capsys, content, reason
+):
+    """Test an edges file that is not one the step-13 prompt describes.
+
+    Given:
+        A well-formed edges file and a malformed one beside it.
+    When:
+        main() merges both into the knowledge graph.
+    Then:
+        It should print a BAD EDGES line naming the malformed file and the
+        reason, still draw the well-formed file's edge, and exit 1.
+    """
+    # Arrange
+    good = tmp_path / "design-edges-1.json"
+    good.write_text(json.dumps(GOOD_EDGES))
+    bad = tmp_path / "design-edges-2.json"
+    bad.write_text(content)
+
+    # Act
+    code = run_edges(emit_claim_graph, monkeypatch, tmp_path, [good, bad])
+    err = capsys.readouterr().err
+    graph = json.loads((tmp_path / "kg.json").read_text())
+
+    # Assert
+    assert code == 1
+    assert "BAD EDGES design-edges-2.json: " in err
+    assert reason in err
+    assert any(e["type"] == "builds_on" and e["source"] == "claim:a" for e in graph["edges"])
+
+
+@pytest.mark.parametrize("named", [["claim:a"], ["claim:a", "claim:a"]], ids=["one-id", "one-id-twice"])
+def test_main_should_report_a_principle_naming_fewer_than_two_claims(
+    emit_claim_graph, monkeypatch, tmp_path, capsys, named
+):
+    """Test a principle that breaks the prompt's two-or-more rule.
+
+    Given:
+        A principle whose `realizedBy` names one held claim, once or twice.
+    When:
+        main() merges it into the knowledge graph.
+    Then:
+        It should drop the principle with a line saying it names 1 distinct
+        claim, distinct from the line for claims that do not resolve, and
+        exit 0.
+    """
+    # Arrange
+    edges = tmp_path / "design-edges-1.json"
+    edges.write_text(json.dumps({"edges": [], "principles": [
+        {"statement": "Pools own their workers.", "realizedBy": named, "confidence": "high"}]}))
+
+    # Act
+    code = run_edges(emit_claim_graph, monkeypatch, tmp_path, [edges])
+    out = capsys.readouterr().out
+
+    # Assert
+    assert code == 0
+    assert "design-edges-1.json: principle 'Pools own their workers.' names 1 distinct claim(s)" in out
+    assert "not held" not in out

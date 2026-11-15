@@ -55,6 +55,14 @@ Usage:
     python3 emit_claim_graph.py --graph knowledge-graph.json \\
         --design-claims design-claims.json --doc-units doc-units.json \\
         [--edges design-edges-*.json] --out merged-knowledge-graph.json
+
+Each item an edges file holds that cannot be drawn is counted on a `dropped:`
+line and named on a line below it with its file and the claim ids at fault.
+An edges file that is not one the step-13 prompt describes is skipped whole,
+with a `BAD EDGES <file>: <reason>` line on stderr.
+
+Exit codes: 0; 1 when any edges file was skipped. The graph is written either
+way, without the skipped files' edges and principles.
 """
 
 from __future__ import annotations
@@ -63,6 +71,7 @@ import argparse
 import collections
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +131,102 @@ PIPELINE_CLAIM_ID = re.compile(r"claim:[0-9a-f]{64}")
 def slug(text: str, limit: int = 60) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return s[:limit].rstrip("-")
+
+
+CONFIDENCE = {"low": 0, "medium": 1, "high": 2}
+
+
+def design_payload_fault(payload: Any) -> str | None:
+    """Why `payload` is not a design-edges file the step-13 prompt describes, or None."""
+    if not isinstance(payload, dict):
+        return "the file is not a JSON object with `edges` and `principles`"
+    for key in ("edges", "principles"):
+        if not isinstance(payload.get(key, []), list):
+            return f"`{key}` is not a list"
+    for p in payload.get("principles", []):
+        if not isinstance(p, dict) or not isinstance(p.get("statement"), str):
+            return "a principle has no `statement`"
+        if not isinstance(p.get("realizedBy", []), list):
+            return "a principle's `realizedBy` is not a list"
+        if p.get("confidence", "low") not in CONFIDENCE:
+            return (f"a principle's `confidence` is {p.get('confidence')!r}, "
+                    f"not low, medium, or high")
+    if not all(isinstance(e, dict) for e in payload.get("edges", [])):
+        return "an edge is not a JSON object"
+    return None
+
+
+def read_design_edges(name: str, payload: dict, canonical: dict[str, str], floor: int,
+                      principles: dict[str, dict], dropped: collections.Counter,
+                      items: list[str]) -> list[dict[str, Any]]:
+    """The graph edges one design-edges file yields; principles merge into `principles`.
+
+    Everything the emitter reads from an agent's design-edges file is read
+    here, so `check_prompts.py` can run this on the step-13 prompt's own
+    example and require that every key it reads is one the prompt describes.
+    A dropped item is counted in `dropped` and described in `items`.
+    """
+    out: list[dict[str, Any]] = []
+    for p in payload.get("principles", []):
+        if CONFIDENCE[p.get("confidence", "low")] < floor:
+            continue
+        named = p.get("realizedBy", [])
+        if len(set(named)) < 2:
+            # The prompt requires two or more; this is the agent's error, not
+            # a consequence of merging.
+            dropped["principle naming <2 claims"] += 1
+            items.append(f"{name}: principle {p['statement'][:60]!r} names "
+                         f"{len(set(named))} distinct claim(s)")
+            continue
+        realized = sorted({canonical[c] for c in named if c in canonical})
+        if len(realized) < 2:
+            dropped["principle with <2 resolvable claims"] += 1
+            unknown = sorted(c for c in named if c not in canonical)
+            items.append(f"{name}: principle {p['statement'][:60]!r} resolves "
+                         f"to {len(realized)} claim(s); not held: {unknown or 'none'}")
+            continue
+        pid = PRINCIPLE_PREFIX + slug(p["statement"])
+        # Two agents can independently find the same principle; merge rather
+        # than emit duplicates, keeping the union of evidence.
+        justified = {canonical[c] for c in p.get("justifiedBy", []) if c in canonical}
+        if pid in principles:
+            principles[pid]["realized"].update(realized)
+            principles[pid]["justified"].update(justified)
+            principles[pid]["scope"].update(p.get("scope", []))
+            principles[pid]["agents"] += 1
+        else:
+            principles[pid] = {
+                "statement": p["statement"],
+                "realized": set(realized),
+                "justified": justified,
+                "tension": p.get("tension"),
+                "scope": set(p.get("scope", [])),
+                "confidence": p.get("confidence", "low"),
+                "agents": 1,
+            }
+
+    for e in payload.get("edges", []):
+        src, dst = canonical.get(e.get("from")), canonical.get(e.get("to"))
+        if src is None or dst is None:
+            dropped["edge referencing unknown claim"] += 1
+            unknown = [c for c in (e.get("from"), e.get("to")) if c not in canonical]
+            items.append(f"{name}: {e.get('type')} edge; not held: {unknown}")
+            continue
+        mapped = EDGE_MAP.get(e.get("type"))
+        if not mapped:
+            dropped[f"unmapped edge type: {e.get('type')}"] += 1
+            items.append(f"{name}: unmapped edge type {e.get('type')!r} "
+                         f"from {e.get('from')} to {e.get('to')}")
+            continue
+        out.append({
+            "source": src,
+            "target": dst,
+            "type": mapped,
+            "direction": "bidirectional" if e["type"] == "tensions-with" else "forward",
+            "description": f"{e['type']}: {e.get('rationale', '')}".strip(),
+            "weight": 0.8,
+        })
+    return out
 
 
 def main() -> int:
@@ -354,59 +459,33 @@ def main() -> int:
             })
 
     # ---- principles and design edges ----
-    order = {"low": 0, "medium": 1, "high": 2}
-    floor = order[args.min_confidence]
+    floor = CONFIDENCE[args.min_confidence]
     principles: dict[str, dict] = {}
     design_edges = 0
     dropped_edges: collections.Counter = collections.Counter()
+    # One line per dropped item, naming its file and the ids at fault. The
+    # counts alone left an operator unable to find the agent whose output was
+    # dropped, or to tell an agent's error from a claim set the run never held.
+    dropped_items: list[str] = []
 
+    # Files that are not design-edges files the prompt describes. Each is named
+    # and skipped, so one malformed agent output neither stops the emit nor
+    # hides which agent to re-run.
+    bad_edges: list[str] = []
     for path in args.edges:
-        payload = json.loads(path.read_text())
-        for p in payload.get("principles", []):
-            if order.get(p.get("confidence", "low"), 0) < floor:
-                continue
-            realized = sorted({canonical[c] for c in p.get("realizedBy", []) if c in canonical})
-            if len(realized) < 2:
-                dropped_edges["principle with <2 resolvable claims"] += 1
-                continue
-            pid = PRINCIPLE_PREFIX + slug(p["statement"])
-            # Two agents can independently find the same principle; merge rather
-            # than emit duplicates, keeping the union of evidence.
-            if pid in principles:
-                principles[pid]["realized"].update(realized)
-                principles[pid]["justified"].update(
-                    canonical[c] for c in p.get("justifiedBy", []) if c in canonical)
-                principles[pid]["scope"].update(p.get("scope", []))
-                principles[pid]["agents"] += 1
-            else:
-                principles[pid] = {
-                    "statement": p["statement"],
-                    "realized": set(realized),
-                    "justified": {canonical[c] for c in p.get("justifiedBy", []) if c in canonical},
-                    "tension": p.get("tension"),
-                    "scope": set(p.get("scope", [])),
-                    "confidence": p.get("confidence", "low"),
-                    "agents": 1,
-                }
-
-        for e in payload.get("edges", []):
-            src, dst = canonical.get(e.get("from")), canonical.get(e.get("to"))
-            if src is None or dst is None:
-                dropped_edges["edge referencing unknown claim"] += 1
-                continue
-            mapped = EDGE_MAP.get(e.get("type"))
-            if not mapped:
-                dropped_edges[f"unmapped edge type: {e.get('type')}"] += 1
-                continue
-            edges.append({
-                "source": src,
-                "target": dst,
-                "type": mapped,
-                "direction": "bidirectional" if e["type"] == "tensions-with" else "forward",
-                "description": f"{e['type']}: {e.get('rationale', '')}".strip(),
-                "weight": 0.8,
-            })
-            design_edges += 1
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, ValueError) as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+        else:
+            reason = design_payload_fault(payload)
+        if reason:
+            bad_edges.append(f"BAD EDGES {path.name}: {reason}")
+            continue
+        added = read_design_edges(path.name, payload, canonical, floor, principles,
+                                  dropped_edges, dropped_items)
+        edges.extend(added)
+        design_edges += len(added)
 
     for pid, p in sorted(principles.items()):
         nodes.append({
@@ -535,11 +614,15 @@ def main() -> int:
     print(f"duplicate edges merged:     {duplicate_edges}")
     if dropped_edges:
         print(f"  dropped: {dict(dropped_edges)}")
+        for item in dropped_items:
+            print(f"    {item}")
     if dangling:
         print(f"  dangling edges removed: {dangling}")
     print(f"graph: {len(graph['nodes'])} nodes, {len(graph['edges'])} edges")
     print(f"→ {args.out}")
-    return 0
+    for line in bad_edges:
+        print(line, file=sys.stderr)
+    return 1 if bad_edges else 0
 
 
 if __name__ == "__main__":
