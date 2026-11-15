@@ -385,3 +385,34 @@ def test_main_should_fall_back_to_directories_when_there_is_no_graph(
     assert [s["name"] for s in payload["subsystems"]] == ["discovery", "worker"]
     assert payload["unassignedFiles"] == []
     assert payload["vocabulary"][0]["subsystems"] == ["discovery", "worker"]
+
+
+def test_main_should_assign_every_file_by_directory_with_no_graph(
+    seed_scope_facts, monkeypatch, tmp_path, capsys
+):
+    """Test --no-graph beside a graph at the default location.
+
+    Given:
+        Doc units from three files and, at `<repo-root>/.ua/knowledge-graph.json`,
+        a graph whose layers cover two of them.
+    When:
+        main() seeds the scope facts with --no-graph.
+    Then:
+        It should ignore the graph, assign every file by directory, and print
+        no UNASSIGNED line.
+    """
+    # Arrange
+    (tmp_path / ".ua").mkdir()
+    graph_with_layers(tmp_path / ".ua" / "knowledge-graph.json", [
+        {"id": "layer:discovery", "nodeIds": ["file:pkg/discovery/lan.py"]},
+        {"id": "layer:worker", "nodeIds": ["file:pkg/worker/pool.py"]},
+    ])
+
+    # Act
+    payload = run_main(seed_scope_facts, monkeypatch, tmp_path,
+                       extra=("--no-graph", "--src-prefix", "pkg/"))
+
+    # Assert
+    assert payload["subsystemSource"] == "directory-fallback"
+    assert payload["unassignedFiles"] == []
+    assert "UNASSIGNED" not in capsys.readouterr().out

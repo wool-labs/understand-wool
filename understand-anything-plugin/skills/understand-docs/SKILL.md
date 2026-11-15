@@ -1,8 +1,33 @@
+---
+name: understand-docs
+description: Extract the claims a Python codebase's docstrings make, verify each against the code with independent agents, and emit them as claim nodes on the project's knowledge graph. Load only when the user invokes /understand-docs by name; a run dispatches dozens of agents.
+argument-hint: "[repo-root] [--src <path>]..."
+disable-model-invocation: true
+---
+
 # understand-docs — documentation claim graph
 
 Extracts every individual claim from a codebase's docstrings, reconciles them across independent extraction passes, verifies each against the code, and emits the result as nodes on the project's knowledge graph.
 
-Not a user-facing slash command. These scripts are run in sequence by an operator or a driving session; the LLM work happens in dispatched subagents using the prompts in `prompts/`.
+Only a user starts this skill, as `/understand-docs`: a run dispatches dozens of agents. In Claude Code, `disable-model-invocation` keeps the model from loading it on its own; the description says the same to a harness that ignores that key. The scripts run in sequence under an operator, and the LLM work happens in dispatched subagents, each given one of the prompts in `prompts/` with its placeholders filled in.
+
+## Running it
+
+`<SKILL_DIR>` is the directory holding this file, which the harness names as the skill's base directory when it loads the skill. Every script runs as `python3 <SKILL_DIR>/<script>.py`; the commands below shorten that to the script's name.
+
+Before anything runs, settle three things with the user, from the argument to `/understand-docs` where it gives them:
+
+1. `<repo-root>`, the repository to analyze, and the source paths under it to harvest (`--src`, one per path; default the whole repository).
+2. How far to run. Steps 1–3 dispatch no agent. Step 4 dispatches N agents per extraction bundle, step 7 two per grounding bundle, and step 13 one per design bundle; tell the user the number of bundles after steps 4, 6, and 12 write them, and continue past each only as far as the user agreed.
+3. `<work>`, one directory for every artifact: by default `<repo-root>/.ua/docs/`, or `<repo-root>/.understand-anything/docs/` when that legacy directory exists, which is where step 1 writes without `--out`. Every file name in a command below is in `<work>`, except the step-4 pass files, which go in `<work>/passes/` so that no `claims-*.json` name in `<work>` is a pass file.
+
+**Step 1 harvests the doc units:**
+
+```bash
+python3 harvest_docs.py <repo-root> [--src <path>]... --out <work>
+```
+
+It writes `doc-units.json` and `e0-candidates.json`, and prints a `SKIPPED (unparseable)` line on stderr for each file it could not parse; step 3 decides what those mean.
 
 ---
 
@@ -10,7 +35,7 @@ Not a user-facing slash command. These scripts are run in sequence by an operato
 
 Three constraints drive nearly every design decision here, and all three were measured rather than assumed:
 
-**Extraction is not deterministic, so it is repeated.** Five independent agents extract from the same doc units; claims that fewer than three passes produce are dropped. Canonical-form rules in the extraction prompt moved agreement on wool's load-balancing subsystem from 41.5% to 60.0% (claims of all four types produced by at least two of five passes, exact match under the shipped normaliser) with no other change — prompt text is the highest-leverage lever in this pipeline.
+**Extraction is not deterministic, so it is repeated.** Five independent agents extract from the same doc units; claims that fewer than three passes produce are dropped. Canonical-form rules in the extraction prompt moved agreement on wool's load-balancing subsystem from 41.5% to 60.0% (claims of all four types produced by at least two of five passes, exact match under the shipped normaliser) with no other change — prompt text is the highest-leverage lever in this pipeline. That figure was measured with a prompt that was never committed. `prompts/extract-claims.md` reconstructs it and carries two amendments, in its rules 5 and 6, that have not been run, so re-measure agreement before quoting a number for the current prompt.
 
 **Verification must not be circular.** Claims come *from* docstrings, so an agent verifying one will happily quote the docstring back as proof. `strip_docstrings.py` removes the option: agents read a mirror where every docstring is blanked but **line numbers are preserved**, so cited evidence still maps to the real file. Code that shares a line with a docstring stays in the mirror, and a file that cannot be parsed is left out of the mirror, because a verbatim copy would carry its docstrings.
 
@@ -28,7 +53,7 @@ Each script is deterministic, stdlib-only, and prints what it did. Nothing here 
 | 2 | **Scope facts** — subsystems, vocabulary | `seed_scope_facts.py` | `scope-facts.json` |
 | 2b | **Version timeline** (optional) | `version_timeline.py` | `version-timeline.json` |
 | 3 | **Strip** docstrings into a mirror | `strip_docstrings.py --verify` | mirror tree |
-| 4 | **Extract claims** — *N agents per subsystem, identical prompt* | agents + `prompts/extract-claims.md` | `claims-<sub>-pass<N>.json` |
+| 4 | **Extract claims** — *N agents per bundle, identical prompt* | `build_extraction_bundles.py`, then agents + `prompts/extract-claims.md` | `extract-<sub>.json`, then `claims-<sub>-pass<N>.json` |
 | 4b | **Check quotes** — must exit 0 before step 5 | `lint_claims.py --doc-units --quotes-only` | pass or fail on stdout |
 | 5 | **Reconcile** passes into a claim set | `reconcile_claims.py --label <sub>` | `claims-<sub>.json` + rejected/excluded |
 | 5b | **Lint** claims against their source quotes | `lint_claims.py --doc-units` | review queue on stdout |
@@ -38,9 +63,17 @@ Each script is deterministic, stdlib-only, and prints what it did. Nothing here 
 | 9 | **Tie-break bundle** — disputed claims only | `build_tiebreak_bundle.py` | `tiebreak-<label>.json` |
 | 10 | **Adjudicate** — *1 agent* | agent + `prompts/tiebreak-verdicts.md` | `verdicts-tiebreak.json` |
 | 11 | **Re-reconcile** with adjudication | `reconcile_verdicts.py --tiebreak` | final `grounded-*.json` |
-| 12 | **Design lens** — roles + blocking | `design_lens.py` | `design-claims.json`, `design-blocks.json` |
-| 13 | **Design edges** — *N agents* | agents | `design-edges-<n>.json` |
+| 12 | **Design lens** — roles + blocking | `design_lens.py --claims-per-bundle 120` | `design-claims.json`, `design-blocks.json`, `design-bundle-<n>.json` |
+| 13 | **Design edges** — *1 agent per bundle* | agents + `prompts/design-edges.md` | `design-edges-<n>.json` |
 | 14 | **Emit** into the knowledge graph | `emit_claim_graph.py` | merged `knowledge-graph.json` |
+
+**Step 2 assigns every source file to a subsystem.** Run it on the directory step 1 was given, with the knowledge graph when one exists, since its layers are the subsystems; without one, directories are:
+
+```bash
+python3 seed_scope_facts.py <repo-root> --doc-units doc-units.json [--graph <knowledge-graph.json>] --out <work>
+```
+
+It writes `scope-facts.json`, which step 4 reads to divide the doc units, and prints how many files it assigned. When it also prints `UNASSIGNED: N — the layer partition is incomplete`, the graph's layers leave files out, and step 4 would leave their doc units in no bundle: run step 2 again with `--no-graph` in place of `--graph`, which ignores every graph and assigns each file by its directory, or stop and ask the user whether to refresh the graph with `/understand` first. Without either flag, step 2 reads the graph at `<repo-root>/.ua/knowledge-graph.json` when one is there.
 
 **Step 2b is a measurement, and no later step reads its result.** It reports whether the dates of doc units are spread widely enough that recency could tell which of two contradicting doc units is newer. Step 13 is unaffected by the result: a contradiction between two claims is one `contradicts` edge for the pair, in either order, whatever step 2b reports. Do not order the pair by recency, and never write a `supersedes` edge: step 14 drops any edge type it does not know, so the contradiction would vanish from the graph. The step is optional; run it when the user wants the measurement, report the verdict to them, and continue the pipeline. Nothing in this step calls for a change to the user's repository: do not commit, stage, stash, fetch, tag, or unshallow on its account.
 
@@ -88,10 +121,20 @@ In every other case, stop. Steps 1 and 3 read files the same way, so a file step
 | `LEAK` | A docstring other than the `<docstring removed>` marker is still in the mirror, at the file and line listed. | Stop, as above. |
 | `SYMBOL LOST` | A class or function in the source is absent from the mirror at its line. A grader looking for it would find nothing and answer `unverifiable`. | Stop, as above. |
 
+**Step 4 extracts claims from bundles a script divides.** Build them from the files steps 1 and 2 wrote:
+
+```bash
+python3 build_extraction_bundles.py --doc-units doc-units.json --scope-facts scope-facts.json --out <work>
+```
+
+It writes one `extract-<sub>.json` per bundle and prints each with its doc-unit count. `<sub>` is the subsystem's name; a subsystem with more than `--max-units` (default 100) doc units is divided, whole files at a time, into `<sub>-1` … `<sub>-k`. That label is the `<sub>` of every later step. The script exits 1 with a `BAD INPUT` line, before writing anything, when either file is missing or malformed. It exits 1 with an `UNASSIGNED` line naming each source file that holds doc units and belongs to no subsystem; those doc units are in no bundle. If step 2 printed its own `UNASSIGNED` line, run step 2 with `--no-graph` as its rule above says, then this step. If it did not, `scope-facts.json` was written from another doc-units file: run step 2 on this one, then this step.
+
+For each bundle, dispatch five agents, numbered 1 to 5; step 5 keeps a claim that three of the five passes produce, so never dispatch fewer agents than step 5's `--quorum`. Give agent `<i>` the text of `prompts/extract-claims.md` with `{INPUT}` replaced by the bundle's path and `{OUTPUT}` by `<work>/passes/claims-<sub>-pass<i>.json`, and state its pass number `<i>`. No agent sees another's output. The pass files take that name, and steps 4b and 5 select them by it; `reconcile_claims.py` also reads `<sub>-pass<N>.json`, the name the archived wool runs used.
+
 **Step 4b gates step 5: every `sourceQuote` must be in its doc unit.** The extraction prompt tells agents the quote is checked, and the reconciler merges two passes' wordings on the strength of it. For each subsystem, run the check over that subsystem's pass files and the doc-units file step 1 wrote:
 
 ```bash
-python3 lint_claims.py claims-<sub>-pass1.json claims-<sub>-pass2.json ... --doc-units doc-units.json --quotes-only
+python3 lint_claims.py passes/claims-<sub>-pass1.json passes/claims-<sub>-pass2.json ... --doc-units doc-units.json --quotes-only
 ```
 
 It prints the number of claims read from each file, then exits 0 when every quote of every claim appears in the `text` of the doc unit its claim names, as one contiguous span that matches exactly apart from line breaks and runs of spaces. Confirm that every pass file is listed with the number of claims you expect. It exits 1 otherwise, and prints one `QUOTE` block per failure with the reason and, in brackets, the pass file it came from, or a `FAIL: no claims read from …` line for a pass file that held none. Act on the reason:
@@ -109,7 +152,7 @@ Do not start step 5 until the check exits 0 for every subsystem. If a pass fails
 **Step 5 reconciles each subsystem's passes on its own.** Pass one subsystem's pass files and name the subsystem:
 
 ```bash
-python3 reconcile_claims.py claims-<sub>-pass1.json claims-<sub>-pass2.json ... --label <sub> --out <dir>
+python3 reconcile_claims.py passes/claims-<sub>-pass1.json passes/claims-<sub>-pass2.json ... --label <sub> --out <work>
 ```
 
 It writes `claims-<sub>.json`, `claims-rejected-<sub>.json`, and, when a claim type was excluded, `claims-excluded-<sub>.json`. Without `--label`, the label is the `<sub>` the pass-file names share, other than `claims`, and otherwise a top-level `subsystem` key in the pass files, with `layer:` removed and each `:` made `_`; when neither gives a label, the script prints a `NO LABEL` line on stderr, writes nothing, and exits 2. Pass `--label` so the label is the one steps 5b and 6 name. Run it once per subsystem.
@@ -120,7 +163,7 @@ It writes `claims-<sub>.json`, `claims-rejected-<sub>.json`, and, when a claim t
 python3 lint_claims.py claims-<sub>.json --doc-units doc-units.json
 ```
 
-Name the file; do not use a `claims-*.json` glob. Step 5 writes `claims-rejected-<sub>.json` and `claims-excluded-<sub>.json` in the same directory, and step 4's pass files match the same pattern. The script skips the rejected and excluded files with a `SKIPPED` line on stderr; it cannot tell a pass file from a claim set, and linting pass files here inflates every count.
+Name the file; do not use a `claims-*.json` glob. Step 5 writes `claims-rejected-<sub>.json` and `claims-excluded-<sub>.json` in the same directory, and the script skips them with a `SKIPPED` line on stderr. It cannot tell a pass file from a claim set, which is why the pass files live in `<work>/passes/`; linting them here inflates every count.
 
 It prints three count lines, then one block per flag:
 
@@ -163,9 +206,38 @@ Do not dispatch grounding agents on the bundles of a run that exited 1.
 
 Steps 12–14 are the *understanding* half and are independent of 7–11; a graph can be emitted with claims ungrounded, and each such claim node then reads `groundingVerdict: "ungrounded"` (see [Reading a claim node](#reading-a-claim-node)).
 
+**Steps 12 and 13 recover design edges.** Run step 12 over every subsystem's claim set, naming each `claims-<sub>.json`, and pass the `grounded-<label>.json` files when grounding has run:
+
+```bash
+python3 design_lens.py claims-<sub>.json ... [--grounded grounded-<label>.json ...] --claims-per-bundle 120 --out <work>
+```
+
+Besides `design-claims.json` and `design-blocks.json`, it writes `design-bundle-<n>.json` files of at most 120 distinct claims each, packing blocks in order, and deletes any left in `--out` by an earlier run. For each bundle, dispatch one agent with the text of `prompts/design-edges.md`, `{INPUT}` replaced by the bundle's path, `{OUTPUT}` by `<work>/design-edges-<n>.json`, and `{MIRROR}` by the `<dest-root>` step 3 wrote the mirror to. Each agent ends with a short summary that names any claim graded `contradicted` it found supporting a principle and anything in its input that looked wrong; relay those to the user with the run's report. The prompt offers `realizes` and `exemplifies`, which `EDGE_MAP` accepted before and the archived wool run never used, so no measurement covers them.
+
+**Step 14 emits the claim graph.** It needs the project's knowledge graph; when `<repo-root>` has none, stop after step 13 and tell the user to run `/understand` first. Write the result into `<work>`, not over the project's graph:
+
+```bash
+python3 emit_claim_graph.py --graph <repo-root>/.ua/knowledge-graph.json --design-claims design-claims.json --doc-units doc-units.json --edges design-edges-1.json design-edges-2.json ... --out <work>/knowledge-graph.json
+```
+
+Replacing the project's `knowledge-graph.json` with `<work>/knowledge-graph.json` is the user's decision; ask before copying it.
+
+Step 14 prints a `dropped:` line with a count per cause when it discards anything from those files, then one line per discarded item naming its file and the claim ids it does not hold. Act on each line:
+
+| line | what it means | what to do |
+|---|---|---|
+| `BAD EDGES <file>: <reason>` on stderr, with exit 1 | The file is not one the prompt describes, and step 14 skipped it whole. | Re-run that bundle's agent. |
+| `unmapped edge type` | The agent wrote a type the prompt does not offer. | Re-run that bundle's agent. |
+| a principle that `names 1 distinct claim(s)` or none | The agent broke the prompt's two-or-more rule. | Re-run that bundle's agent. |
+| `not held:` an id that is not in the `design-claims.json` step 12 wrote | The agent invented or miscopied the id. | Re-run that bundle's agent. |
+| `not held:` an id that is in the `design-claims.json` step 12 wrote | Step 14 was given a `--doc-units` file that does not hold the claim's doc unit. | Pass the doc-units file step 1 wrote, and run step 14 again. |
+| a principle with `not held: none` | It names two or more held claims, which merged into fewer than two nodes at step 14. | Nothing; the principle is not drawn. |
+
+Re-run a bundle's agent once. If its second file draws the same line, stop and tell the user which bundle and which line; do not re-run it a third time.
+
 **To add verdicts to a graph that was emitted ungrounded**, run these in order:
 
-1. Re-run step 12 with the grounded files: `design_lens.py claims-*.json --grounded grounded-*.json --out <dir>`. Verdicts reach the emitter only through the `design-claims.json` this writes; re-running step 14 alone leaves every node `ungrounded`.
+1. Re-run step 12 with the grounded files, naming each claim set as step 12 does: `design_lens.py claims-<sub>.json ... --grounded grounded-<label>.json ... --out <work>`. Verdicts reach the emitter only through the `design-claims.json` this writes; re-running step 14 alone leaves every node `ungrounded`.
 2. Re-run step 14 with the earlier output as `--graph` **and the same `--edges` files as before**. The emitter removes every claim and principle node an earlier run wrote, with their edges, and writes them again; omitting `--edges` therefore deletes the principles and design edges without a warning.
 3. Confirm the emitter printed `replaced N node(s)` and that the `ungrounded` count on the `occurrences:` line dropped.
 
@@ -190,7 +262,7 @@ So: two passes, then `build_tiebreak_bundle.py` isolates only the disagreements,
 
 `supported` · `contradicted` · `unverifiable`
 
-Defined once in `prompts/_taxonomy.md`, which is included **byte-identical** in both agent prompts — `check_prompts.py --sync` regenerates the copies and the default run asserts they match, because a drift means the adjudicator applies a different rule than the passes it adjudicates, on exactly the claims that were hardest.
+Defined once in `prompts/_taxonomy.md`, which is included **byte-identical** in both grounding prompts, `ground-claims.md` and `tiebreak-verdicts.md` — `check_prompts.py --sync` regenerates the copies and the default run asserts they match, because a drift means the adjudicator applies a different rule than the passes it adjudicates, on exactly the claims that were hardest.
 
 ### Scope notes, and the fourth verdict that isn't
 
@@ -310,9 +382,9 @@ pytest -m "not integration"     # unit suites only
 One tool is run by hand rather than by CI:
 
 ```bash
-python3 check_prompts.py --sync          # rewrite the shared block into both prompts, then check
+python3 check_prompts.py --sync          # rewrite the shared block into both grounding prompts, then check
 ```
 
-Edit the taxonomy in `prompts/_taxonomy.md` and run `--sync`; never hand-edit the copies inside the two prompts. The copies are what the agents read, and a hand-edit that lands in one of them is the exact drift `check_prompts.py` exists to catch.
+Edit the taxonomy in `prompts/_taxonomy.md` and run `--sync`; never hand-edit the copies inside the two grounding prompts. The copies are what the agents read, and a hand-edit that lands in one of them is the exact drift `check_prompts.py` exists to catch.
 
 Requires Python 3.10+ (`X | None` syntax throughout).

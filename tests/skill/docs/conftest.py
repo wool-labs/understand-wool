@@ -59,6 +59,11 @@ def build_grounding_bundles() -> Any:
 
 
 @pytest.fixture(scope="session")
+def build_extraction_bundles() -> Any:
+    return load_script("build_extraction_bundles")
+
+
+@pytest.fixture(scope="session")
 def build_tiebreak_bundle() -> Any:
     return load_script("build_tiebreak_bundle")
 

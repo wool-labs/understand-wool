@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""check_prompts.py — guard the invariants the grounding prompts rely on.
+"""check_prompts.py — guard the invariants the agent prompts rely on.
 
 Run: python3 check_prompts.py          check
      python3 check_prompts.py --sync   rewrite the shared block, then check
@@ -7,14 +7,30 @@ Run: python3 check_prompts.py          check
 These are not style checks. Each one guards a failure that has actually cost
 something, or that would be invisible if it happened.
 
-`--sync` copies `prompts/_taxonomy.md` into the marked region of both prompts.
+`--sync` copies `prompts/_taxonomy.md` into the marked region of both grounding
+prompts, `ground-claims.md` and `tiebreak-verdicts.md`.
 The block was kept identical by hand-pasting, which is exactly the thing that
 drifts — and a drifted taxonomy means the adjudicator applies a different rule
 than the passes it adjudicates, on the claims that were hardest to judge.
+
+The step-13 checks tie `prompts/design-edges.md` to the code on both sides of
+it, and test behaviour rather than match text. The edge types the prompt's
+table offers must be exactly the keys of `EDGE_MAP` in the imported emitter.
+The prompt's own `## Output` example is then run through the emitter's
+`read_design_edges` inside a dict that logs every key read from it: every key
+the emitter reads must be one the example shows, every edge and principle of
+the example must be accepted, and probe edges of a type the prompt does not
+offer must be dropped. How the emitter spells a read does not matter, since
+only the reads it performs are logged. On the input side, the claim fields the
+prompt lists must be exactly `BUNDLE_FIELDS` in `design_lens.py`, which writes
+them into each bundle.
 """
 
 from __future__ import annotations
 
+import collections
+import importlib.util
+import json
 import re
 import sys
 from pathlib import Path
@@ -48,6 +64,64 @@ def sync() -> int:
     return 0
 
 
+def load_script(path: Path):
+    """The module at `path`, imported under a private name."""
+    spec = importlib.util.spec_from_file_location(f"_check_prompts_{path.stem}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class Recorder(dict):
+    """A dict that logs every key read from it, and from every dict inside it."""
+
+    def __init__(self, data: dict, log: set):
+        super().__init__({k: record(v, log) for k, v in data.items()})
+        self._log = log
+
+    def __getitem__(self, key):
+        self._log.add(key)
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self._log.add(key)
+        return super().get(key, default)
+
+    def __contains__(self, key):
+        self._log.add(key)
+        return super().__contains__(key)
+
+
+def record(value, log: set):
+    if isinstance(value, dict):
+        return Recorder(value, log)
+    if isinstance(value, list):
+        return [record(v, log) for v in value]
+    return value
+
+
+class HoldsEverything(dict):
+    """A claim index that holds every id, as itself."""
+
+    def __contains__(self, key):
+        return isinstance(key, str)
+
+    def __getitem__(self, key):
+        return key
+
+    def get(self, key, default=None):
+        return key if isinstance(key, str) else default
+
+
+def keys_in(value) -> set:
+    """Every object key anywhere in a JSON value."""
+    if isinstance(value, dict):
+        return set(value) | set().union(*(keys_in(v) for v in value.values()))
+    if isinstance(value, list):
+        return set().union(*(keys_in(v) for v in value))
+    return set()
+
+
 def check(name: str, ok: bool, detail: str = "") -> None:
     print(f"  {'PASS' if ok else 'FAIL'}  {name}")
     if not ok:
@@ -65,6 +139,8 @@ def main() -> int:
     ground = (PROMPTS / "ground-claims.md").read_text()
     tiebreak = (PROMPTS / "tiebreak-verdicts.md").read_text()
     reconcile = (HERE / "reconcile_verdicts.py").read_text()
+    edges_prompt = (PROMPTS / "design-edges.md").read_text()
+    extract = (PROMPTS / "extract-claims.md").read_text()
 
     print("prompt invariants:")
 
@@ -126,6 +202,79 @@ def main() -> int:
         check(f"ground prompt uses {token} placeholder", token in ground)
     check("no absolute /tmp paths remain in prompts",
           "/tmp/" not in ground and "/tmp/" not in tiebreak)
+
+    # Step 13. The emitter maps each edge type through EDGE_MAP and drops any
+    # other, so the prompt's table and the map must be the same set.
+    emit = load_script(HERE / "emit_claim_graph.py")
+    mapped = set(getattr(emit, "EDGE_MAP", {}))
+    part1 = edges_prompt.split("## Part 1", 1)[-1].split("## Part 2", 1)[0]
+    offered = set(re.findall(r"^\| `([^`]+)` \|", part1, re.M))
+    check("design-edges prompt offers exactly the EDGE_MAP types",
+          bool(mapped) and offered == mapped,
+          f"prompt only {sorted(offered - mapped)}, EDGE_MAP only {sorted(mapped - offered)}")
+    # Run the prompt's own example through the emitter's reader.
+    block = re.search(r"```json\n(.*?)\n```", edges_prompt.split("## Output", 1)[-1], re.S)
+    try:
+        example = json.loads(block.group(1)) if block else None
+    except ValueError:
+        example = None
+    check("design-edges output example is valid JSON", isinstance(example, dict))
+    if isinstance(example, dict):
+        edges = example.get("edges") or []
+        ends = (edges[0].get("from"), edges[0].get("to")) if edges else ("claim:x", "claim:y")
+        probes = [{"from": ends[0], "to": ends[1], "type": t, "rationale": "probe"}
+                  for t in ("supersedes", "undescribed-type")]
+        payload = {**example, "edges": edges + probes,
+                   "principles": (example.get("principles") or []) * 2}
+        log: set = set()
+        principles: dict = {}
+        try:
+            fault = emit.design_payload_fault(record(payload, log))
+            accepted = emit.read_design_edges("example", record(payload, log), HoldsEverything(),
+                                              0, principles, collections.Counter(), [])
+        except Exception as exc:  # a read of a key the example lacks raises here
+            fault, accepted = f"{type(exc).__name__}: {exc}", []
+        statements = {p.get("statement") for p in example.get("principles") or []}
+        check("emitter accepts every edge and principle of the design-edges example",
+              fault is None and len(accepted) == len(edges) and len(principles) == len(statements),
+              f"fault {fault!r}; {len(accepted)} of {len(edges)} edges, "
+              f"{len(principles)} of {len(statements)} principles")
+        types = {e.get("type") for e in edges}
+        check("design-edges example uses only the types the prompt offers",
+              bool(types) and types <= offered, str(sorted(map(str, types - offered))))
+        unshown = sorted(map(str, log - keys_in(example)))
+        check("emitter reads only keys the design-edges example shows",
+              bool(log) and not unshown, str(unshown))
+    # The claim fields the step-13 agent is told it has are the fields
+    # design_lens.py writes into each bundle.
+    lens = load_script(HERE / "design_lens.py")
+    claims_line = re.search(r"^- `claims` — ([^.\n]*)", edges_prompt, re.M)
+    listed = set(re.findall(r"`(\w+)`", claims_line.group(1))) if claims_line else set()
+    bundled = set(getattr(lens, "BUNDLE_FIELDS", ()))
+    check("design-edges prompt lists exactly the claim fields design_lens bundles",
+          bool(bundled) and listed == bundled,
+          f"prompt only {sorted(listed - bundled)}, BUNDLE_FIELDS only {sorted(bundled - listed)}")
+    for token in ("{MIRROR}", "{INPUT}", "{OUTPUT}"):
+        check(f"design-edges prompt uses {token} placeholder", token in edges_prompt)
+    check("design-edges prompt allows one contradicts edge per pair and no supersedes",
+          "one `contradicts` edge per pair" in edges_prompt
+          and "never write a `supersedes` edge" in edges_prompt)
+    for token in ("{INPUT}", "{OUTPUT}"):
+        check(f"extract prompt uses {token} placeholder", token in extract)
+    # The bundle label names the files; `subsystem` is the only record of the
+    # subsystem a divided subsystem's bundles share, and reconcile_claims.py
+    # carries it into the claim set, where design_lens.py and the emitter read it.
+    extract_output = extract.split("## Output", 1)[-1]
+    for key in ("bundle", "subsystem", "pass", "claims"):
+        check(f"extract output schema names `{key}`", f'"{key}"' in extract_output)
+
+    # Nothing addressed to maintainers reaches an agent. An HTML comment is
+    # invisible in a rendered view and read in full by an agent given the file.
+    for path in sorted(PROMPTS.glob("*.md")):
+        if path.name == "_taxonomy.md":
+            continue
+        text = path.read_text().replace(BEGIN, "").replace(END, "")
+        check(f"{path.name} carries no HTML comment", "<!--" not in text)
 
     # The anti-circularity control is the load-bearing one.
     check("ground prompt forbids prose as evidence",

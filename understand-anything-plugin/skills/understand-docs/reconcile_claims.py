@@ -145,9 +145,11 @@ PASS_NAME = re.compile(r"^(?:claims-)?(?P<sub>.+)-pass\d+$")
 def label_from_names(paths: list[Path]) -> str | None:
     """The `<sub>` every pass file's name gives, or None if they disagree.
 
-    The extraction prompt's output has no `subsystem` key, so the label used to
-    fall back to the literal `claims`, and a second subsystem reconciled into
-    the same directory overwrote the first.
+    The label used to come from the pass files' `subsystem` key alone, and fell
+    back to the literal `claims` when they had none, so a second subsystem
+    reconciled into the same directory overwrote the first. The key names the
+    subsystem, which the bundles of a divided subsystem share; the names carry
+    the bundle's label.
     """
     subs = set()
     for path in paths:

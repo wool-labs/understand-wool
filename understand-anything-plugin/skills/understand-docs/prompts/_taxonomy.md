@@ -1,13 +1,3 @@
-<!--
-SHARED TAXONOMY BLOCK.
-
-This section is included verbatim in BOTH `ground-claims.md` and
-`tiebreak-verdicts.md`. If the two drift, the adjudicator applies a different
-rule than the passes it adjudicates — on precisely the claims that were hardest
-to judge. Keep them byte-identical; `check_prompts.py` asserts it, and
-`check_prompts.py --sync` regenerates them from this file.
--->
-
 ## Verdicts
 
 Exactly one per claim. Decide by asking a question about **repair**:
