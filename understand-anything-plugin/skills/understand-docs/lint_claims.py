@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """lint_claims.py — catch claims that assert more than the docstring did.
 
-Deterministic, stdlib only, no LLM. Reads extracted or reconciled claims and
+Steps 4b and 5b of the `understand-docs` pipeline. Deterministic, stdlib only,
+no LLM. Reads extracted or reconciled claims and
 compares each `claimText` against the `sourceQuote` it came from.
 
 WHY THIS EXISTS

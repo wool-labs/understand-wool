@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """audit_graph_structure.py — measure how much of the real call graph is present.
 
-Deterministic, stdlib only, no LLM.
+Not a step of the `understand-docs` pipeline: a separate measuring instrument,
+run on its own. Deterministic, stdlib only, no LLM.
 
 A claim graph sits on top of a structural graph, and inherits its blind spots. On
 wool this was not hypothetical: an agent asked "how do nested routines work?"

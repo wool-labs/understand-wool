@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """strip_docstrings.py — mirror a package with every docstring blanked.
 
-Phase E support for the documentation claim graph (see CLAIM-GRAPH-PLAN.md §2).
-Deterministic, stdlib only, no LLM.
+Step 3 of the `understand-docs` pipeline; the agents of steps 7, 10, and 13
+read the mirror, and steps 8 and 11 check citations against it. Deterministic,
+stdlib only, no LLM.
 
 **This is the anti-circularity control, and it is the load-bearing part of
 grounding.** A grounding agent asked "does the code support this claim?" will,
@@ -27,6 +28,14 @@ A file is read the way Python reads it: a UTF-8 byte-order mark and a PEP 263
 coding line are honoured. A file that still cannot be decoded or parsed cannot
 be stripped, so it is **left out of the mirror** and named on stderr. Copying it
 through unchanged would put its docstrings in front of the grounding agents.
+
+The destination is deleted and rebuilt on every run, so it must hold nothing
+but the mirror. Each mirror carries a `.understand-docs-mirror` marker file at
+its root, and the run refuses to delete a destination that is neither empty nor
+marked, or is a file: it exits 1 with a `NOT A MIRROR` line and touches nothing.
+It refuses the same way when the source root is the destination or lies inside
+it, since deleting the destination would delete the source. Each refusal names
+its cause and the action that fits it.
 
 A source root that does not exist, or holds no `.py` file, is an error: the run
 exits 1 without touching the destination.
@@ -59,6 +68,40 @@ from pathlib import Path
 
 
 MARKER = "<docstring removed>"
+# Written at the root of every mirror. A destination without it, and with
+# anything in it, is not a mirror this script built, and is not deleted.
+MIRROR_MARK = ".understand-docs-mirror"
+
+
+def refusal(src: Path, dest: Path) -> tuple[str, str] | None:
+    """Why `dest` must not be deleted and what to do instead, or None."""
+    if src.is_relative_to(dest):
+        return (f"the source root {src} is {dest} or lies inside it, so deleting "
+                f"the destination would delete the source",
+                "The arguments are swapped or mistyped: run again with "
+                "<src-root> and <dest-root> as SKILL.md step 3 defines them. "
+                "Never empty or remove this directory; it holds the source.")
+    if dest.exists() and not dest.is_dir():
+        return (f"{dest} is a file",
+                "Stop and tell the user; do not delete this file. Run again with "
+                "a destination the user names.")
+    if dest.is_dir() and any(dest.iterdir()) and not (dest / MIRROR_MARK).is_file():
+        return (f"{dest} holds files and no {MIRROR_MARK} marker, so this script "
+                f"cannot tell it from a directory it did not build",
+                "Stop and tell the user; do not delete this directory. A mirror "
+                "built before the marker existed is refused the same way, so it "
+                "may be an old mirror; whether to remove it is the user's "
+                "decision. Run again with a destination the user names, or once "
+                "the user has emptied or removed this one.")
+    return None
+
+
+def not_a_mirror(reason: str, action: str) -> int:
+    """Print the refusal to delete the destination; the exit code."""
+    print(f"NOT A MIRROR — {reason}. The destination is deleted and rebuilt on "
+          f"every run, so nothing was mirrored and nothing was deleted. {action}",
+          file=sys.stderr)
+    return 1
 
 
 def docstring_statements(tree: ast.AST) -> list[ast.Expr]:
@@ -183,20 +226,32 @@ def main() -> int:
     # gone once the destination is cleared below.
     # `is_file()`, because a directory may be named `*.py` and reading it
     # raised an uncaught `IsADirectoryError`.
-    files = sorted(p for p in src.rglob("*.py")
-                   if p.is_file()
-                   and "__pycache__" not in p.parts
-                   and not p.is_relative_to(dest))
+    found = [p for p in src.rglob("*.py")
+             if p.is_file() and "__pycache__" not in p.parts]
+    files = sorted(p for p in found if not p.is_relative_to(dest))
+    # Before the destination is cleared, so a mistyped source root does not
+    # cost an existing mirror. An empty mirror would otherwise pass every check
+    # below, and every grader would then find no code at all.
+    no_source = (f"NO SOURCE — {'no .py file under' if src.is_dir() else 'no such directory:'} "
+                 f"{src}. Nothing was mirrored and {dest} was left as it was.")
+    if not found:
+        print(no_source, file=sys.stderr)
+        return 1
+    # Tested before an empty `files` is reported: a destination that holds the
+    # source, or an unmarked one inside it that holds every source file, would
+    # otherwise be reported as a source root with no source.
+    refused = refusal(src, dest)
+    if refused:
+        return not_a_mirror(*refused)
     if not files:
-        # Before the destination is cleared, so a mistyped source root does not
-        # cost an existing mirror. An empty mirror would otherwise pass every
-        # check below, and every grader would then find no code at all.
-        print(f"NO SOURCE — {'no .py file under' if src.is_dir() else 'no such directory:'} "
-              f"{src}. Nothing was mirrored and {dest} was left as it was.",
-              file=sys.stderr)
+        print(no_source, file=sys.stderr)
         return 1
     if dest.exists():
         shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    (dest / MIRROR_MARK).write_text(
+        "Built by understand-docs strip_docstrings.py, which deletes and "
+        "rebuilds this directory on every run.\n", encoding="utf-8")
 
     total_docs = 0
     mirrored: list[Path] = []

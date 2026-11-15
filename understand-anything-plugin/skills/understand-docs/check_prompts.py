@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """check_prompts.py — guard the invariants the agent prompts rely on.
 
+Not a step of the `understand-docs` pipeline: a maintainer check, run by the
+test suite.
+
 Run: python3 check_prompts.py          check
      python3 check_prompts.py --sync   rewrite the shared block, then check
 
@@ -275,6 +278,23 @@ def main() -> int:
             continue
         text = path.read_text().replace(BEGIN, "").replace(END, "")
         check(f"{path.name} carries no HTML comment", "<!--" not in text)
+
+    # SKILL.md places each script by step number. A script that names a stage, a
+    # phase, or the plan document the pipeline was designed in sends an agent
+    # resolving a question to terms that map to nothing it has been given.
+    # Matched over the whole text, so a docstring wrapped between the word and
+    # its number or letter is caught. The word and a number match in any case;
+    # a lettered phase matches only as a capital, so "stage a file" is English.
+    # A section sign followed by a number is how the plan was cited.
+    stale = re.compile(r"(?i:\b(?:stage|phase))[\s\-]*\d+[a-z]?\b"
+                       r"|(?i:\bphase)[\s\-]*[A-E]\b"
+                       r"|(?i:claim[\s\-_]*graph[\s\-_]*plan)|§\s*\d")
+    for path in sorted(HERE.glob("*.py")):
+        text = path.read_text()
+        hits = [f"{text.count(chr(10), 0, m.start()) + 1}: {' '.join(m.group().split())}"
+                for m in stale.finditer(text)]
+        check(f"{path.name} names no stage, phase, or plan document", not hits,
+              "; ".join(hits))
 
     # The anti-circularity control is the load-bearing one.
     check("ground prompt forbids prose as evidence",

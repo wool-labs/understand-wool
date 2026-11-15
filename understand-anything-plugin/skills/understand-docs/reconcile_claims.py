@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """reconcile_claims.py — merge N independent extraction passes into a claim set.
 
-Phase B tier-1 + tier-2 of the documentation claim graph (see CLAIM-GRAPH-PLAN.md
-§1.8). Deterministic, stdlib only, no LLM and no embeddings.
+Step 5 of the `understand-docs` pipeline. Deterministic, stdlib only, no LLM and
+no embeddings.
 
 Given N passes of the identical extraction task over one bundle, produce the set
 of claims that survive quorum, plus the agreement statistics that tell you
@@ -170,7 +170,7 @@ def main() -> int:
     ap.add_argument("--quote-gate", type=float, default=0.7)
     ap.add_argument("--out", type=Path, default=Path("."))
     ap.add_argument("--label", default=None)
-    # illustrative/aspirational claims never reach Phase E grounding, and they
+    # illustrative/aspirational claims never reach step-7 grounding, and they
     # do not canonicalize: a code example has no single right phrasing, so five
     # independent passes produce five different claims about it. On wool's
     # dispatch-api subsystem they are 8-9% of volume and cost about 6 points of

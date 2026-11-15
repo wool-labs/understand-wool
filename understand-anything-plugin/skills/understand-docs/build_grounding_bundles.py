@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""build_grounding_bundles.py — package reconciled claims for Phase E grounding.
+"""build_grounding_bundles.py — package reconciled claims for step-7 grounding.
 
-Deterministic, stdlib only, no LLM.
+Step 6 of the `understand-docs` pipeline. Deterministic, stdlib only, no LLM.
 
 Groups a subsystem's surviving claims by doc unit, attaches the code location
 each claim is *about*, and classifies that location by whether it can be grounded

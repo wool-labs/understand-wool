@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """build_tiebreak_bundle.py — package only the claims two passes disagreed on.
 
-Deterministic, stdlib only, no LLM.
+Step 9 of the `understand-docs` pipeline. Deterministic, stdlib only, no LLM.
 
 Grounding runs two independent passes. Where they agree, the verdict stands;
 where they differ, a third pass is dispatched on **just those claims**. This is

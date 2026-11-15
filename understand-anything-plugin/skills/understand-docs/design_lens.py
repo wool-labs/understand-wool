@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """design_lens.py — tag claims by design role and block them for relation extraction.
 
-Phase C of the documentation claim graph, retargeted for *understanding* rather
-than validation (see CLAIM-GRAPH-PLAN.md §1.9, §2). Deterministic, stdlib only,
-no LLM, no embeddings.
+Step 12 of the `understand-docs` pipeline. Deterministic, stdlib only, no LLM,
+no embeddings.
 
-The validation pipeline asks "is this claim true?". A design graph asks "why is
-the system shaped this way?", and that question needs different structure:
+Steps 1 to 11 ask "is this claim true?". This step and the next serve
+understanding rather than validation: they ask "why is the system shaped this
+way?", and that question needs different structure:
 
 **Design roles.** A claim's grammatical shape predicts its explanatory function.
 Measured over 960 factual claims from three wool subsystems, 146 (15%) take a
