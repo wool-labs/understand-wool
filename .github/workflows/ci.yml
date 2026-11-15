@@ -58,7 +58,7 @@ jobs:
 
       - name: Lint
         # Both linters, so a failure in either fails the same step. `lint:py`
-        # is pyflakes over the claim pipeline and its suites.
+        # is pyflakes over every skill's scripts and the Python suites.
         run: |
           pnpm lint
           pnpm lint:py

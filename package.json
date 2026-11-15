@@ -33,7 +33,7 @@
     "benchmark:large-repo": "node scripts/benchmark-large-repo.mjs",
     "dev:dashboard": "pnpm --filter @understand-anything/dashboard dev",
     "lint": "eslint .",
-    "lint:py": "python -m pyflakes understand-anything-plugin/skills/understand-docs tests/skill/docs tests/integration"
+    "lint:py": "python -m pyflakes understand-anything-plugin/skills tests"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
