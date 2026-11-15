@@ -43,7 +43,7 @@ Three constraints drive nearly every design decision here, and all three were me
 
 ---
 
-## Phase order
+## Step order
 
 Each script is deterministic, stdlib-only, and prints what it did. Nothing here calls an LLM; the agent steps are marked.
 

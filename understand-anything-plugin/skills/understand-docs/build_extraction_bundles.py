@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """build_extraction_bundles.py — divide the doc units into step-4 extraction bundles.
 
-Deterministic, stdlib only, no LLM.
+Step 4 of the `understand-docs` pipeline, before its agents run. Deterministic,
+stdlib only, no LLM.
 
 Each bundle is the `{INPUT}` of `prompts/extract-claims.md`. The division is
 made here rather than by the operator because it fixes which doc units a pass

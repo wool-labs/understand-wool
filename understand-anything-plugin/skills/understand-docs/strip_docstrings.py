@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """strip_docstrings.py — mirror a package with every docstring blanked.
 
-Phase E support for the documentation claim graph (see CLAIM-GRAPH-PLAN.md §2).
-Deterministic, stdlib only, no LLM.
+Step 3 of the `understand-docs` pipeline; the agents of steps 7, 10, and 13
+read the mirror, and steps 8 and 11 check citations against it. Deterministic,
+stdlib only, no LLM.
 
 **This is the anti-circularity control, and it is the load-bearing part of
 grounding.** A grounding agent asked "does the code support this claim?" will,

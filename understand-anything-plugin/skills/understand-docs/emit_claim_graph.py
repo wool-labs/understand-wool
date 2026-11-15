@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """emit_claim_graph.py — merge the documentation claim graph into knowledge-graph.json.
 
-Deterministic, stdlib only, no LLM.
+Step 14 of the `understand-docs` pipeline. Deterministic, stdlib only, no LLM.
 
 Renders claims and design principles as nodes the existing dashboard already
 knows how to draw. No new UI: `claim` is an established `NodeType`, `concept`
@@ -12,8 +12,8 @@ carries the principles, and the Knowledge edge category (`documents`,
 byte-identical to the knowledge graph's node id format
 (`class:wool/src/.../base.py:LoadBalancerLike`). How many claims hit an existing
 node exactly depends on how much of the code the graph models: on wool, 61% on
-the first load-balancing graph and 99% (1,770 of 1,784) on the graph Part C
-queried. The remainder are functions the graph does not carry as their own
+the first load-balancing graph and 99% (1,770 of 1,784) on the graph of the
+whole package. The remainder are functions the graph does not carry as their own
 nodes, so linkage falls back:
 
     exact symbol  ->  containing class  ->  containing file
@@ -251,7 +251,7 @@ def main() -> int:
     # The natural workflow emits twice: once ungrounded, again after grounding,
     # with the first output as the second run's `--graph`. Appending to it would
     # leave a stale `ungrounded` node beside the fresh `supported` one under the
-    # same id and name, which is the ambiguity this stage exists to prevent.
+    # same id and name, which is the ambiguity this step exists to prevent.
     #
     # The stamp identifies this script's nodes. The id tests cover a graph
     # written before the stamp existed: every id this run will mint, every

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """seed_scope_facts.py — derive subsystems and seed the vocabulary map.
 
-Stage 0b of the documentation claim graph (see CLAIM-GRAPH-PLAN.md). Deterministic,
-stdlib only, no LLM.
+Step 2 of the `understand-docs` pipeline. Deterministic, stdlib only, no LLM.
 
-`scope-facts.json` feeds the Phase D same-referent gate, which is the single
-highest-precision lever available: the most common false contradiction is two
-claims about *different things* that share vocabulary. "The retry limit is 3" in
-`discovery/` and in `worker/` are not in conflict, and the model should be told
-the scope rather than made to infer it.
+Step 4 (`build_extraction_bundles.py`) reads the `subsystems` of
+`scope-facts.json` to divide the doc units into extraction bundles, and steps 4
+to 8 name their files by subsystem. No step reads `vocabulary`. It is a
+seed for a reviewer, because two claims about *different things* that share
+vocabulary look like a contradiction and are not one: "the retry limit is 3" in
+`discovery/` and in `worker/` are not in conflict.
 
 Nothing here is hand-authored. Two derivations:
 
@@ -197,7 +197,7 @@ def seed_vocabulary(doc_units: list[dict], subsystem_of: dict[str, str]) -> tupl
     #
     # Kept because parallel names are worth a reviewer's glance, but labelled for
     # what it actually produces. Real alias detection needs the claim text, not
-    # the field body, and belongs after Phase B.
+    # the field body, and belongs after step 5.
     aliases: list[dict] = []
     names = sorted(uses)
     for i, a in enumerate(names):

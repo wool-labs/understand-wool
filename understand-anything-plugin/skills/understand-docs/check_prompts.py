@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """check_prompts.py — guard the invariants the agent prompts rely on.
 
+Not a step of the `understand-docs` pipeline: a maintainer check, run by the
+test suite.
+
 Run: python3 check_prompts.py          check
      python3 check_prompts.py --sync   rewrite the shared block, then check
 

@@ -1,9 +1,9 @@
 """Tests for design_lens.py — the second hop of the scope-note wire.
 
-This stage had no test module at all, and it is where the predecessor payload
-survived while the stage after it dropped the field for months. Both facts point
-the same way: what matters here is not that the stage works in isolation, but
-that the field it carries is the one the next stage reads.
+This step had no test module at all, and it is where the predecessor payload
+survived while the step after it dropped the field for months. Both facts point
+the same way: what matters here is not that the step works in isolation, but
+that the field it carries is the one the next step reads.
 
 The truncation is the specific hazard. `project()` keeps three evidence items;
 without bound-role-first ordering the limiting citation — the entire content of

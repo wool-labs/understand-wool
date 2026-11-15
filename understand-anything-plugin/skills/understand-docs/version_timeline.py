@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """version_timeline.py — date each doc unit and resolve it to a release.
 
-Step 2b of the documentation claim pipeline (optional). Deterministic, stdlib +
+Step 2b of the `understand-docs` pipeline (optional). Deterministic, stdlib +
 git only, no LLM.
 
 Measures one thing: **are doc units spread over enough release series that

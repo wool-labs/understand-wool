@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""reconcile_verdicts.py — verify and reconcile Phase E grounding passes.
+"""reconcile_verdicts.py — verify and reconcile the step-7 grounding passes.
 
-Deterministic, stdlib only, no LLM.
+Steps 8 and 11 of the `understand-docs` pipeline. Deterministic, stdlib only,
+no LLM.
 
 Two jobs, in order. The verification comes first because a consensus computed
 over fabricated evidence is worse than no consensus at all — it launders a guess

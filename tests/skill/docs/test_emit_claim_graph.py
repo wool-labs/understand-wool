@@ -1,11 +1,11 @@
 """Tests for emit_claim_graph.py — the hop that drops things silently.
 
-This stage had no test module, and it is where the scope note's predecessor was
-computed upstream and thrown away here for months without a symptom: each stage
+This step had no test module, and it is where the scope note's predecessor was
+computed upstream and thrown away here for months without a symptom: each step
 was correct against its own contract, and the contract they violated existed
 only between them.
 
-So these tests assert the *inter-stage* facts — the field arrives, the tag does
+So these tests assert the *inter-step* facts — the field arrives, the tag does
 not, a stale verdict is loud rather than mapped — rather than re-testing the
 emitter's whole surface.
 """
@@ -123,7 +123,7 @@ def test_main_should_attach_the_scope_note_to_the_claim_node(
         main() merges it into the knowledge graph.
     Then:
         The node should carry the note, and its readable content should state
-        where the claim stops holding — the payload this stage used to discard.
+        where the claim stops holding — the payload this step used to discard.
     """
     # Act
     nodes, _ = run_main(emit_claim_graph, monkeypatch, tmp_path,
@@ -198,7 +198,7 @@ def test_main_should_report_a_stale_verdict_rather_than_mapping_it(
     Then:
         It should report the verdict as unmapped rather than inventing a tag
         for it — the fold is enforced upstream, and a stale input reaching this
-        stage is a fact the operator needs told.
+        step is a fact the operator needs told.
     """
     # Act
     run_main(emit_claim_graph, monkeypatch, tmp_path,

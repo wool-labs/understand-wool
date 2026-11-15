@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """harvest_docs.py — extract documentation units and run deterministic field checks.
 
-Stage 0 of the documentation claim graph (see CLAIM-GRAPH-PLAN.md). No LLM, no
-embeddings, no network, no third-party dependencies. Two jobs:
+Step 1 of the `understand-docs` pipeline. No LLM, no embeddings, no network, no
+third-party dependencies. Two jobs:
 
   1. HARVEST — walk tracked Python sources, emit every docstring as a `DocUnit`
      with a content-addressed ID, parsing reStructuredText info field lists.

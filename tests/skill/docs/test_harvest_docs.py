@@ -1,10 +1,10 @@
-"""Tests for harvest_docs.py — stage 0 of the claim pipeline.
+"""Tests for harvest_docs.py — step 1 of the claim pipeline.
 
-Stage 0 mints the `docUnitId` every later stage joins on, so one group pins
+Step 1 mints the `docUnitId` every later step joins on, so one group pins
 what that id depends on and what it does not. Another covers how a docstring
 is parsed and split. A third covers the E0 field checks, whose value rests on
 their suppression gates: a candidate list that is mostly false positives is
-not reviewed. The first group covers which files the stage treats as Python,
+not reviewed. The first group covers which files the step treats as Python,
 where it must agree with the docstring stripper.
 """
 
@@ -96,7 +96,7 @@ def test_main_should_name_and_skip_a_file_it_cannot_parse(
 def test_main_should_harvest_exactly_the_files_the_stripper_mirrors(
     harvest_docs, strip_docstrings, monkeypatch, tmp_path, odd
 ):
-    """Test that stage 0 and the mirror agree on which files are Python.
+    """Test that step 1 and step 3 agree on which files are Python.
 
     Given:
         A repository with one plain module and one that is broken, in an
