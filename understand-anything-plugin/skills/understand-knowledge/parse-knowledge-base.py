@@ -16,7 +16,6 @@ Output:
 """
 
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -32,7 +31,6 @@ def resolve_ua_dir(root: Path) -> Path:
 # ---------------------------------------------------------------------------
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
-CODE_BLOCK_RE = re.compile(r"```(\w*)")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 INDEX_SECTION_RE = re.compile(r"^##\s+(.+)$", re.MULTILINE)
 
@@ -126,19 +124,6 @@ def extract_wikilinks(text: str) -> list[dict]:
             "display": m.group(2).strip() if m.group(2) else None,
         })
     return links
-
-
-def extract_headings(text: str) -> list[dict]:
-    """Extract all markdown headings with level and text."""
-    return [
-        {"level": len(m.group(1)), "text": m.group(2).strip()}
-        for m in HEADING_RE.finditer(text)
-    ]
-
-
-def extract_code_blocks(text: str) -> list[str]:
-    """Extract languages from fenced code blocks."""
-    return [m.group(1) for m in CODE_BLOCK_RE.finditer(text) if m.group(1)]
 
 
 def extract_first_paragraph(text: str) -> str:
@@ -392,11 +377,7 @@ def parse_wiki(root: Path) -> dict:
         h1 = extract_h1(text)
         frontmatter = extract_frontmatter(text)
         wikilinks = extract_wikilinks(text)
-        headings = extract_headings(text)
-        code_langs = extract_code_blocks(text)
         summary = extract_first_paragraph(text)
-        line_count = text.count("\n") + 1
-        word_count = len(text.split())
 
         # Derive category from index.md lookup
         category = category_lookup.get(basename.lower(), "")

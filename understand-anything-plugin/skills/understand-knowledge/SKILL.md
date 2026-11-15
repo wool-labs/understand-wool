@@ -42,7 +42,18 @@ Detection signals: has `index.md` + multiple `.md` files with wikilinks. May hav
 ### Phase 2: SCAN (already done)
 
 The parse script in Phase 1 already performed the deterministic scan. The scan-manifest.json contains:
-- Article nodes (one per wiki .md file) with extracted wikilinks, headings, frontmatter
+- Article nodes (one per wiki .md file), each with exactly these fields:
+  - `id`: `article:<path under the wiki root, without .md>`
+  - `type`: `"article"`
+  - `name`: the article's H1, or its file name without `.md` when it has none
+  - `filePath`: the path relative to the wiki root
+  - `summary`: the first paragraph under an H1, or else the file's first paragraph, cut to 200 characters; `Wiki article: <name>` only when the file has no paragraph
+  - `tags`: the category (lowercased), the directory path relative to the wiki root, and frontmatter `tags` in the inline comma-separated form (`tags: a, b`). The bracket form `tags: [a, b]` is split on commas too, so it yields the tags `[a` and `b]`; the block form (one `- a` per line) yields none
+  - `complexity`: `complex` above 15 wikilinks, `moderate` above 5, otherwise `simple`
+  - `knowledgeMeta.wikilinks`: each wikilink target as written
+  - `knowledgeMeta.backlinks`: the ids of the articles whose wikilinks resolve to this one, one entry per wikilink, so an id repeats when an article links here more than once; self-links are excluded
+  - `knowledgeMeta.category`: the last index.md section that lists the article, present only when one does. An article listed in several sections still gets a `categorized_under` edge to each
+  - `knowledgeMeta.content`: the article's first 3,000 characters
 - Source nodes (one per raw/ file)
 - Topic nodes (from index.md section headings)
 - `related` edges (from wikilinks)
@@ -131,7 +142,7 @@ Dispatch `article-analyzer` subagents to extract implicit knowledge:
 
 ## Notes
 
-- The parse script handles ALL deterministic extraction (wikilinks, headings, frontmatter, categories from index.md). The LLM agents only add implicit knowledge that requires inference.
+- The parse script handles ALL deterministic extraction (wikilinks, inline frontmatter `tags`, categories from index.md section headings). The LLM agents only add implicit knowledge that requires inference.
 - Categories and taxonomy come from index.md section headings, NOT from filename prefixes. The Karpathy spec is intentionally abstract about naming conventions.
 - The graph uses `kind: "knowledge"` to signal the dashboard to use force-directed layout instead of hierarchical dagre.
 - Source nodes from raw/ are lightweight (filename + size only) — we don't parse PDFs or binary files.
