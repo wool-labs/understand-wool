@@ -146,16 +146,33 @@ CLAIMS_LINE = "each with `claimText`, `docUnitId`, `roles`"
     ("prompts/extract-claims.md", "# Task: extract atomic claims from documentation\n",
      "<!-- maintainers: re-measure -->\n# Task: extract atomic claims from documentation\n",
      "extract-claims.md carries no HTML comment"),
+    ("reconcile_verdicts.py", "the step-7 grounding passes", "Phase E grounding passes",
+     "reconcile_verdicts.py names no stage, phase, or plan document"),
+    ("design_lens.py", "Step 12 of the `understand-docs` pipeline",
+     "stage 3 of the `understand-docs` pipeline",
+     "design_lens.py names no stage, phase, or plan document"),
+    ("design_lens.py", "no embeddings.\n", "no embeddings (see CLAIM-GRAPH-PLAN.md §2).\n",
+     "design_lens.py names no stage, phase, or plan document"),
+    ("reconcile_verdicts.py", "the step-7 grounding passes", "phase E grounding passes",
+     "reconcile_verdicts.py names no stage, phase, or plan document"),
+    ("design_lens.py", "Step 12 of the `understand-docs` pipeline", "Phase\nC of the `understand-docs` pipeline",
+     "design_lens.py names no stage, phase, or plan document"),
+    ("design_lens.py", "no embeddings.\n", "no embeddings (see claim-graph-plan.md).\n",
+     "design_lens.py names no stage, phase, or plan document"),
+    ("design_lens.py", "no embeddings.\n", "no embeddings (see the plan, § 1.9).\n",
+     "design_lens.py names no stage, phase, or plan document"),
 ], ids=["edge-type-in-emitter-only", "single-quoted-edge-type", "two-edge-types-on-one-line",
         "edge-type-assigned-after-the-literal", "edge-type-special-cased-in-the-reader",
         "field-the-prompt-omits", "single-quoted-field", "field-read-through-a-list-alias",
         "field-read-in-a-comprehension", "field-read-in-a-helper", "field-key-in-a-variable",
         "field-dropped-from-the-example", "example-uses-a-forbidden-type",
-        "bundle-field-the-prompt-omits", "comment-in-prompt"])
+        "bundle-field-the-prompt-omits", "comment-in-prompt", "phase-in-a-script",
+        "lowercase-stage-in-a-script", "plan-cited-in-a-script", "lowercase-phase-in-a-script",
+        "phase-wrapped-across-lines", "lowercase-plan-in-a-script", "section-sign-in-a-script"])
 def test_main_should_fail_when_a_prompt_and_its_consumer_drift(
     prompt_invariants, monkeypatch, tmp_path, capsys, path, old, new, failure
 ):
-    """Test the step-13 and maintainer-note invariants against a drifted copy.
+    """Test the step-13, maintainer-note, and step-vocabulary invariants against a drifted copy.
 
     Given:
         A copy of the skill's prompts and scripts in which the emitter accepts
@@ -163,7 +180,8 @@ def test_main_should_fail_when_a_prompt_and_its_consumer_drift(
         assigned, or special-cased; the emitter reads a field the prompt's
         example does not show, however the read is spelled or routed; the
         prompt's example breaks its own table; the prompt's claim fields differ
-        from the bundle's; or a prompt carries an HTML comment.
+        from the bundle's; a prompt carries an HTML comment; or a script names
+        a stage, a phase, or the plan document.
     When:
         check_prompts.main() runs against the copy.
     Then:
@@ -195,4 +213,45 @@ def test_main_should_fail_when_a_prompt_and_its_consumer_drift(
     # Assert
     assert code == 1
     assert [f for f in prompt_invariants.FAILURES if f.startswith(failure)]
+    prompt_invariants.FAILURES.clear()
+
+
+def test_main_should_pass_a_script_that_uses_stage_and_phase_as_english(
+    prompt_invariants, monkeypatch, tmp_path, capsys
+):
+    """Test that the step-vocabulary invariant does not flag ordinary English.
+
+    Given:
+        A copy of the skill in which a script's docstring says "Do not stage a
+        file" and "each phase a model runs", with no number or capital letter
+        naming a stage or phase.
+    When:
+        check_prompts.main() runs against the copy.
+    Then:
+        It should return 0.
+    """
+    # Arrange
+    copy = tmp_path / "skill"
+    (copy / "prompts").mkdir(parents=True)
+    for name in ("emit_claim_graph.py", "reconcile_verdicts.py", "design_lens.py"):
+        (copy / name).write_text((SKILL / name).read_text())
+    for prompt in PROMPTS.glob("*.md"):
+        (copy / "prompts" / prompt.name).write_text(prompt.read_text())
+    target = copy / "design_lens.py"
+    text = target.read_text()
+    old = "no embeddings.\n"
+    assert text.count(old) == 1
+    target.write_text(text.replace(
+        old, "no embeddings. Do not stage a file, and each phase a model runs\nis its own.\n"))
+    monkeypatch.setattr(prompt_invariants, "HERE", copy)
+    monkeypatch.setattr(prompt_invariants, "PROMPTS", copy / "prompts")
+    monkeypatch.setattr(sys, "argv", ["check_prompts.py"])
+    prompt_invariants.FAILURES.clear()
+
+    # Act
+    code = prompt_invariants.main()
+    capsys.readouterr()
+
+    # Assert
+    assert code == 0, prompt_invariants.FAILURES
     prompt_invariants.FAILURES.clear()
