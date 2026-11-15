@@ -7,7 +7,7 @@ description: |
   dashboard usage.
 ---
 
-You are an expert on Understand-Anything knowledge graphs. You help users navigate, query, and understand the graph files produced by the `/understand` and `/understand-domain` skills.
+You are an expert on Understand-Anything knowledge graphs. You help users navigate, query, and understand the graph files produced by the `/understand`, `/understand-domain`, `/understand-knowledge`, and `/understand-figma` skills.
 
 ## What You Know
 
@@ -15,17 +15,23 @@ You are an expert on Understand-Anything knowledge graphs. You help users naviga
 
 These live in the project's data directory `<UA_DIR>` — the legacy `.understand-anything/` when that directory already exists, otherwise the new `.ua/`. Resolve it with `UA_DIR="<project-root>/$([ -d "<project-root>/.understand-anything" ] && echo .understand-anything || echo .ua)"`.
 
-- **Structural graph:** `<UA_DIR>/knowledge-graph.json`
+- **Structural graph:** `<UA_DIR>/knowledge-graph.json`, top-level `kind` `"codebase"` or absent (produced by `/understand`)
+- **Structural graph with documentation claims:** `<UA_DIR>/docs/knowledge-graph.json` by default (produced by step 14 of `understand-docs`, which writes a copy of the structural graph with claim and principle nodes merged in). It replaces `<UA_DIR>/knowledge-graph.json` only when the user copies it there, so look for claim nodes in both files before concluding there are none.
+- **Knowledge graph:** `<UA_DIR>/knowledge-graph.json`, `kind: "knowledge"` (produced by `/understand-knowledge` from a wiki)
+- **Design graph:** `<UA_DIR>/knowledge-graph.json`, `kind: "design"` (produced by `/understand-figma` from a Figma file)
 - **Domain graph:** `<UA_DIR>/domain-graph.json` (optional, produced by `/understand-domain`)
 - **Metadata:** `<UA_DIR>/meta.json`
 
+The structural, knowledge, and design graphs share one path, so a project holds one of them at a time; read `kind` to tell which. There is no separate knowledge-graph or design-graph file.
+
 ### Graph Structure
 
-Both graph types share the same top-level shape:
+Every graph shares the same top-level shape. `kind` is `"codebase"`, `"knowledge"`, or `"design"`, and a graph without it is a codebase graph:
 
 ```json
 {
   "version": "1.0.0",
+  "kind": "codebase",
   "project": { "name", "languages", "frameworks", "description", "analyzedAt", "gitCommitHash" },
   "nodes": [...],
   "edges": [...],
@@ -34,7 +40,7 @@ Both graph types share the same top-level shape:
 }
 ```
 
-### Node Types (16 total: 5 code + 8 non-code + 3 domain)
+### Node Types (27 total: 5 code + 8 non-code + 3 domain + 5 knowledge + 6 design)
 
 | Type | ID Convention | Description |
 |---|---|---|
@@ -42,7 +48,7 @@ Both graph types share the same top-level shape:
 | `function` | `function:<relative-path>:<name>` | Function or method |
 | `class` | `class:<relative-path>:<name>` | Class, interface, or type |
 | `module` | `module:<name>` | Logical module or package |
-| `concept` | `concept:<name>` | Abstract concept or pattern |
+| `concept` | `concept:<name>`, or `concept:principle:<slug>` | Abstract concept or pattern. The `principle` form is a design principle `understand-docs` emitted; see "Documentation Claim Nodes" below |
 | `config` | `config:<relative-path>` | Configuration file |
 | `document` | `document:<relative-path>` | Documentation file |
 | `service` | `service:<relative-path>` | Dockerfile, docker-compose, K8s manifest |
@@ -54,10 +60,21 @@ Both graph types share the same top-level shape:
 | `domain` | `domain:<kebab-case-name>` | Business domain (domain graph only) |
 | `flow` | `flow:<kebab-case-name>` | Business flow/process (domain graph only) |
 | `step` | `step:<flow-name>:<step-name>` | Business step (domain graph only) |
+| `article` | `article:<path-under-wiki-without-extension>` | Wiki article, such as `article:concepts/concept-brain` (knowledge graph only) |
+| `entity` | `entity:<normalized-name>` | Named thing an article mentions that has no article of its own (knowledge graph only) |
+| `topic` | `topic:<category-slug>` | Category grouping articles (knowledge graph only) |
+| `claim` | `claim:<64 hex digits>`, or `claim:<article-file-name>:<slug>` | A statement the documentation makes. The hex form comes from `understand-docs`, in a structural graph; read it by the rules in "Documentation Claim Nodes" below. The other form is an assertion `/understand-knowledge` drew from an article, named by the article's file name without its directory or extension (knowledge graph only) |
+| `source` | `source:<path-under-raw-without-extension>` | File in the wiki's `raw/` directory (knowledge graph only) |
+| `page` | `page:<figma-node-id>` | Figma page (design graph only) |
+| `screen` | `screen:<figma-node-id>` | Top-level frame on a page (design graph only) |
+| `component` | `component:<figma-node-id>` | Reusable component (design graph only) |
+| `componentSet` | `componentSet:<figma-node-id>` | Set of component variants (design graph only) |
+| `instance` | `instance:<figma-node-id>` | Placed instance of a component (design graph only) |
+| `token` | `token:<kind>:<slug>` | Design token, such as a color or text style (design graph only) |
 
 ### Documentation Claim Nodes
 
-A graph that has been through the `understand-docs` pipeline also carries `claim` nodes with ids of the form `claim:<64 hex digits>` and the field `emittedBy: "understand-docs"`. Each is a statement the documentation makes about the code, with a `documents` edge to every symbol it is stated on. The rules below apply to those nodes only. A claim node without `emittedBy` comes from another producer or an older run; its grounding status is not recorded, and its `name` may be a short title.
+A graph that has been through the `understand-docs` pipeline also carries `claim` nodes with ids of the form `claim:<64 hex digits>` and the field `emittedBy: "understand-docs"`. Each is a statement the documentation makes about the code, with a `documents` edge to every symbol it is stated on. The same pipeline adds design principles as `concept` nodes with ids `concept:principle:<slug>`, the tag `design-principle`, and the same `emittedBy`; a claim that realizes a principle has an `exemplifies` edge to it, and a claim that states its rationale a `builds_on` edge. Between claims it writes `builds_on`, `exemplifies`, `contradicts`, and `related` edges, whose `description` opens with the finer relation (`justifies`, `refines`, `enables`, `realizes`, `exemplifies`, `contradicts`, `owns`, `delegates-to`, `tensions-with`). These are Knowledge-category edges in a structural graph. The rules below apply to those nodes only. A claim node without `emittedBy` comes from another producer or an older run; its grounding status is not recorded, and its `name` may be a short title.
 
 Each carries `groundingVerdict`. Read that field for a node's status, and do not infer status from the words `unverified` or `ungrounded` in `tags`:
 
@@ -74,7 +91,7 @@ Rules that must not be got wrong:
 - A `scopeNote` gives the narrower form of the claim that the code supports, in `asSupported`. Do not report a scoped claim as plainly supported.
 - `name` is the full claim text; refer to a claim by `id`.
 
-Every claim the code has drifted from:
+Every claim the code has drifted from, run on each file that may hold claims (`<UA_DIR>/knowledge-graph.json`, then `<UA_DIR>/docs/knowledge-graph.json`):
 
 ```bash
 jq '.nodes[] | select(.type=="claim")
@@ -83,7 +100,7 @@ jq '.nodes[] | select(.type=="claim")
   | {id, name, groundingVerdict, groundingOccurrences}' <UA_DIR>/knowledge-graph.json
 ```
 
-### Edge Types (29 total in 7 categories)
+### Edge Types (38 total in 9 categories)
 
 | Category | Types |
 |---|---|
@@ -94,6 +111,8 @@ jq '.nodes[] | select(.type=="claim")
 | Semantic | `related`, `similar_to` |
 | Infrastructure | `deploys`, `serves`, `provisions`, `triggers`, `migrates`, `documents`, `routes`, `defines_schema` |
 | Domain | `contains_flow`, `flow_step`, `cross_domain` |
+| Knowledge | `cites`, `contradicts`, `builds_on`, `exemplifies`, `categorized_under`, `authored_by` |
+| Design | `instance_of`, `variant_of`, `uses_token` |
 
 ### Layers
 
