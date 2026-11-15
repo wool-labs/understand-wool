@@ -28,7 +28,12 @@ step is confirm-or-correct, not compose.
 
 Usage:
     python3 seed_scope_facts.py <repo-root> --doc-units <doc-units.json>
-        [--graph <knowledge-graph.json>] [--src-prefix wool/src/wool/] [--out DIR]
+        [--graph <knowledge-graph.json> | --no-graph] [--src-prefix wool/src/wool/]
+        [--out DIR]
+
+Without `--graph`, the graph at `<repo-root>/.ua/knowledge-graph.json` (or the
+legacy `.understand-anything/`) is used when it exists. `--no-graph` ignores
+any graph and assigns every file by directory, so no file is left unassigned.
 
 Output:
     <out>/scope-facts.json
@@ -228,7 +233,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("root", type=Path)
     ap.add_argument("--doc-units", type=Path, required=True)
-    ap.add_argument("--graph", type=Path, default=None)
+    graph_arg = ap.add_mutually_exclusive_group()
+    graph_arg.add_argument("--graph", type=Path, default=None)
+    graph_arg.add_argument("--no-graph", action="store_true",
+                           help="ignore any knowledge graph; assign files by directory")
     ap.add_argument("--src-prefix", default="")
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args()
@@ -241,14 +249,15 @@ def main() -> int:
     files = sorted({u["sourceFile"] for u in doc_units})
 
     graph_path = args.graph or (resolve_ua_dir(root) / "knowledge-graph.json")
-    subsystems = subsystems_from_graph(graph_path, args.src_prefix)
+    subsystems = None if args.no_graph else subsystems_from_graph(graph_path, args.src_prefix)
     if subsystems:
         source = "knowledge-graph.layers"
     else:
         subsystems = subsystems_from_directories(files, args.src_prefix)
         source = "directory-fallback"
-        print(f"no usable layers at {graph_path} — falling back to directory structure",
-              file=sys.stderr)
+        if not args.no_graph:
+            print(f"no usable layers at {graph_path} — falling back to directory structure",
+                  file=sys.stderr)
 
     subsystem_of: dict[str, str] = {}
     for key, sub in subsystems.items():
@@ -282,7 +291,8 @@ def main() -> int:
     print(f"{len(subsystems)} subsystems ({source}), "
           f"{len(files) - len(unassigned)}/{len(files)} files assigned")
     if unassigned:
-        print(f"  UNASSIGNED: {len(unassigned)} — the layer partition is incomplete")
+        print(f"  UNASSIGNED: {len(unassigned)} — the layer partition is incomplete; "
+              f"--no-graph assigns every file by directory")
     print(f"{len(clashes)} vocabulary candidates, {len(aliases)} parallel-name candidates")
     print(f"→ {path}  ({payload['stats']['reviewItems']} items need review)")
     return 0
