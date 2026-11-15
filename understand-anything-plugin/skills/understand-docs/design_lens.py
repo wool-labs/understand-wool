@@ -42,13 +42,26 @@ Two block kinds are emitted:
                 from its own doc unit and symbol. These are the `justifies` edge
                 candidates, and they are cheap because rationale is rare.
 
+**Bundles.** With `--claims-per-bundle N`, the blocks are also packed, in the
+order `design-blocks.json` lists them, into bundles of at most N distinct
+claims; a block that alone exceeds N is a bundle of its own. The cap is on
+claims, not blocks, because blocks range from 2 to `--max-block` claims and the
+agent reasons over every claim it is given: fourteen blocks per bundle gave the
+archived wool claims bundles of 7 to 309 claims. Each bundle carries the claim
+records its blocks name, keyed by claim id, so a step-13 agent reads one file:
+it is the `{INPUT}` of `prompts/design-edges.md`.
+
 Usage:
     python3 design_lens.py CLAIMS.json [CLAIMS.json ...] [--grounded G.json ...]
-        [--min-block 2] [--max-block 40] [--out DIR]
+        [--min-block 2] [--max-block 40] [--claims-per-bundle N] [--out DIR]
 
 Output:
-    <out>/design-claims.json    every claim, tagged with roles and symbols
-    <out>/design-blocks.json    blocks for the relation-extraction agents
+    <out>/design-claims.json      every claim, tagged with roles and symbols
+    <out>/design-blocks.json      blocks for the relation-extraction agents
+    <out>/design-bundle-<n>.json  with --claims-per-bundle: {bundle, blocks,
+                                  claims}. Every design-bundle-*.json already
+                                  in --out is deleted first, so a re-run that
+                                  writes fewer bundles leaves none behind.
 """
 
 from __future__ import annotations
@@ -121,6 +134,11 @@ def symbols(text: str) -> list[str]:
     return sorted(out)
 
 
+# The claim fields a step-13 agent reads, as `prompts/design-edges.md` names them.
+BUNDLE_FIELDS = ("claimText", "docUnitId", "grounding", "passCount", "quantifier",
+                 "roles", "subsystem", "symbols")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("claims", nargs="+", type=Path)
@@ -128,6 +146,9 @@ def main() -> int:
                     help="grounded-*.json files, to attach verdicts and evidence")
     ap.add_argument("--min-block", type=int, default=2)
     ap.add_argument("--max-block", type=int, default=40)
+    ap.add_argument("--claims-per-bundle", type=int, default=None,
+                    help="also write design-bundle-<n>.json files of at most N "
+                         "distinct claims each, the step-13 agent inputs")
     ap.add_argument("--out", type=Path, default=Path("."))
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -301,6 +322,36 @@ def main() -> int:
           f"vs {len(records) * (len(records) - 1) // 2:,} if all-pairs")
     print(f"→ {args.out}/design-claims.json")
     print(f"→ {args.out}/design-blocks.json")
+
+    if args.claims_per_bundle:
+        for stale in args.out.glob("design-bundle-*.json"):
+            stale.unlink()
+
+        def named(block: dict) -> set[str]:
+            # A rationale block's anchor is not among its `claimIds`, and the
+            # agent needs its record to cite it.
+            return set(block["claimIds"]) | (
+                {block["anchorClaimId"]} if "anchorClaimId" in block else set())
+
+        parts: list[list[dict]] = []
+        held: set[str] = set()
+        for block in blocks:
+            if parts and len(held | named(block)) <= args.claims_per_bundle:
+                parts[-1].append(block)
+                held |= named(block)
+            else:
+                parts.append([block])
+                held = named(block)
+        for n, part in enumerate(parts, start=1):
+            ids = sorted(set().union(*(named(b) for b in part)))
+            path = args.out / f"design-bundle-{n}.json"
+            path.write_text(json.dumps({
+                "schemaVersion": SCHEMA_VERSION,
+                "bundle": n,
+                "blocks": part,
+                "claims": {i: {k: by_id[i][k] for k in BUNDLE_FIELDS} for i in ids},
+            }, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
+            print(f"→ {path}  {len(part)} blocks, {len(ids)} claims")
     return 0
 
 
